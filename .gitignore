@@ -1,0 +1,37 @@
+# IDE
+.idea/
+.vscode/
+
+# Claude
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+venv/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model checkpoints
+checkpoints/
+
+# Logs
+logs/
+
+# Outputs
+outputs/
+
+# Data (raw datasets are large, consider keeping only processed)
+data/raw/
+
+# OS
+.DS_Store
+Thumbs.db
