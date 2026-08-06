@@ -12,7 +12,7 @@ from models.gcn import GCN
 
 def main():
     # Load Cora dataset
-    dataset = Planetoid(root="./data", name="Cora")
+    dataset = Planetoid(root="../data", name="Cora")
     data = dataset[0]
 
     # Device
