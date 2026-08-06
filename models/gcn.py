@@ -1,21 +1,58 @@
-#!/usr/bin/env python3
-"""GCN model for node classification on graph datasets."""
-
 import torch
-import torch.nn as nn
 from torch_geometric.nn import GCNConv
 
 
-class GCN(nn.Module):
-    """Two-layer Graph Convolutional Network."""
+class GCN(torch.nn.Module):
 
-    def __init__(self, in_features: int, num_classes: int, hidden_dim: int = 16):
+    def __init__(
+        self,
+        input_dim,
+        hidden_dim,
+        output_dim,
+        dropout=0.5
+    ):
         super().__init__()
-        self.conv1 = GCNConv(in_features, hidden_dim)
-        self.conv2 = GCNConv(hidden_dim, num_classes)
 
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-        x = self.conv1(x, edge_index)
+
+        self.conv1 = GCNConv(
+            input_dim,
+            hidden_dim
+        )
+
+
+        self.conv2 = GCNConv(
+            hidden_dim,
+            output_dim
+        )
+
+
+        self.dropout = dropout
+
+
+    def forward(
+        self,
+        x,
+        edge_index
+    ):
+
+        x = self.conv1(
+            x,
+            edge_index
+        )
+
         x = torch.relu(x)
-        x = self.conv2(x, edge_index)
+
+        x = torch.dropout(
+            x,
+            p=self.dropout,
+            train=self.training
+        )
+
+
+        x = self.conv2(
+            x,
+            edge_index
+        )
+
+
         return x

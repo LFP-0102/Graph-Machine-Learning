@@ -1,0 +1,10 @@
+name: GCN
+
+
+hidden_dim: 16
+
+
+dropout: 0.5
+
+
+layers: 2

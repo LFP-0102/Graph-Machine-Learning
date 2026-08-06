@@ -1,0 +1,19 @@
+# 随机种子
+seed: 42
+
+
+# 训练
+train:
+  epochs: 200
+  lr: 0.01
+  weight_decay: 0.0005
+
+
+# 设备
+device: cuda
+
+
+# 保存
+save:
+  checkpoint: true
+  path: ./checkpoints

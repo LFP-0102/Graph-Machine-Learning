@@ -1,0 +1,7 @@
+name: Citeseer
+
+path: ./data/Citeseer
+
+num_classes: 6
+
+task: node_classification

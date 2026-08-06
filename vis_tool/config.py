@@ -23,9 +23,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # ---------------------------------------------------------------------------
-# 默认输出目录
+# 默认输出目录（统一引用 utils.paths.OUTPUT_DIR）
 # ---------------------------------------------------------------------------
-DEFAULT_OUTPUT_DIR: Path = Path(__file__).resolve().parent.parent / "outputs"
+from utils.paths import OUTPUT_DIR
+
+DEFAULT_OUTPUT_DIR: Path = OUTPUT_DIR
 
 # ---------------------------------------------------------------------------
 # 全局默认参数
