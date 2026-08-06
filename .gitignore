@@ -29,8 +29,11 @@ logs/
 # Outputs
 outputs/
 
-# Data (raw datasets are large, consider keeping only processed)
-data/raw/
+# Data (large files, keep out of git)
+data/
+
+# Personal notes / experiments
+2026-8-5-第一次/
 
 # OS
 .DS_Store
