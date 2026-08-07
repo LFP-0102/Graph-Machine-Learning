@@ -1,9 +1,0 @@
-name: Cora
-
-path: ./data/Cora
-
-
-num_classes: 7
-
-
-task: node_classification

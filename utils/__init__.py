@@ -1,2 +1,1 @@
-#!/usr/bin/env python3
-"""Utility functions."""
+"""Utility functions for graph machine learning."""

@@ -1,0 +1,3 @@
+model,dataset,best_epoch,val_acc,test_acc,seed
+GCN,cora,14,0.8040,0.7930,42
+GCN,cora,25,0.7880,0.7860,100

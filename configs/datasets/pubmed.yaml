@@ -1,7 +1,0 @@
-name: PubMed
-
-path: ./data/PubMed
-
-num_classes: 3
-
-task: node_classification

@@ -7,6 +7,7 @@ __all__ = [
     "CHECKPOINT_DIR",
     "LOG_DIR",
     "OUTPUT_DIR",
+    "RESULTS_DIR",
     "RUN_DIR",
     "VIS_DIR",
     "ensure_dirs",
@@ -22,6 +23,7 @@ CONFIG_DIR = ROOT_DIR / "configs"
 # ── 持久化产物 ──────────────────────────────────────────────
 CHECKPOINT_DIR = ROOT_DIR / "checkpoints"
 LOG_DIR        = ROOT_DIR / "logs"
+RESULTS_DIR    = ROOT_DIR / "results"
 
 # ── 输出 ────────────────────────────────────────────────────
 OUTPUT_DIR = ROOT_DIR / "outputs"

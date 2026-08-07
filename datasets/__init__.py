@@ -1,12 +1,12 @@
-#!/usr/bin/env python
-# @File       : __init__.py
-# @Path       : datasets/__init__.py
-# @Author     : 刘赋平
-# @Date       : 2026-08-06 15:29:54
-# @Version    : v1.0.0
-# @Description: 
-#   请在此处填写该模块的功能概述。
-#   例如：封装数据库连接工具类，提供增删改查接口。
-# -----------------------------------------------------------------------------
-# @ChangeLog:
-#   2026/8/6 | 刘赋平 | v1.0.0 | 初始化创建
+from datasets.base import DataDict, load_dataset
+from datasets.cora import load_cora
+from datasets.citeseer import load_citeseer
+from datasets.pubmed import load_pubmed
+
+__all__ = [
+    "DataDict",
+    "load_dataset",
+    "load_cora",
+    "load_citeseer",
+    "load_pubmed",
+]

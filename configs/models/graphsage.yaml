@@ -1,7 +1,0 @@
-name: GraphSAGE
-
-
-hidden_dim: 64
-
-
-aggregator: mean
