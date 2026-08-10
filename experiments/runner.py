@@ -111,9 +111,16 @@ def run_experiment(
     print(f"{'='*55}\n")
 
     # ── 2. 预处理 & 模型 ─────────────────────────────────────
-    adj_np = normalize_adj(data.adj.numpy()) if use_normalized_adj \
-             else add_self_loops(data.adj.numpy())
-    adj = torch.FloatTensor(adj_np)
+    graph_type = getattr(model_class, "graph_type", "adj")
+
+    if graph_type == "adj":
+        adj_np = normalize_adj(data.adj.numpy()) if use_normalized_adj \
+                 else add_self_loops(data.adj.numpy())
+        graph = torch.FloatTensor(adj_np)
+    elif graph_type == "edge_index":
+        graph = data.edge_index
+    else:
+        raise ValueError(f"不支持的 graph_type: {graph_type}")
 
     kwargs = model_kwargs or {}
     model = model_class(
@@ -141,14 +148,14 @@ def run_experiment(
     print("-" * 55)
 
     for epoch in range(epochs):
-        loss = train_epoch(model, data.features, adj,
+        loss = train_epoch(model, data.features, graph,
                            data.labels, data.train_mask, optimizer)
 
-        train_acc = evaluate(model, data.features, adj,
+        train_acc = evaluate(model, data.features, graph,
                              data.labels, data.train_mask)
-        val_acc   = evaluate(model, data.features, adj,
+        val_acc   = evaluate(model, data.features, graph,
                              data.labels, data.val_mask)
-        test_acc  = evaluate(model, data.features, adj,
+        test_acc  = evaluate(model, data.features, graph,
                              data.labels, data.test_mask)
 
         history["train_loss"].append(loss)
@@ -178,7 +185,7 @@ def run_experiment(
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    best_test = evaluate(model, data.features, adj,
+    best_test = evaluate(model, data.features, graph,
                          data.labels, data.test_mask)
     print(f"\nBest Epoch: {best_epoch}  |  "
           f"Val Acc: {best_val_acc:.4f}  |  Test Acc: {best_test:.4f}")
@@ -205,7 +212,7 @@ def run_experiment(
     print(f"训练历史已保存: {run_out / 'history.csv'}")
 
     # ── 5. 预测 & 嵌入 ───────────────────────────────────────
-    pred_labels, pred_probs = predict(model, data.features, adj)
+    pred_labels, pred_probs = predict(model, data.features, graph)
 
     # 类别名称（根据数据集自动选择）
     class_names = CORA_CLASSES if dataset_name == "cora" else None
@@ -225,7 +232,7 @@ def run_experiment(
 
     # ── 7. 隐藏层嵌入可视化（论文 Figure 3a）─────────────────
     if not skip_tsne and hasattr(model, "get_embeddings"):
-        hidden_emb = model.get_embeddings(data.features, adj)
+        hidden_emb = model.get_embeddings(data.features, graph)
         print(f">>> t-SNE 嵌入可视化 (dim={hidden_emb.shape[1]}) ...")
 
         plot_embeddings(

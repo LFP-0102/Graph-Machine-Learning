@@ -8,13 +8,13 @@ import torch
 import torch.nn.functional as F
 
 
-def train_epoch(model, features, adj, labels, train_mask, optimizer):
+def train_epoch(model, features, graph, labels, train_mask, optimizer):
     """单轮训练。
 
     参数：
-        model:       nn.Module，forward(x, adj) → log_softmax
+        model:       nn.Module，forward(x, graph) → log_softmax
         features:    Tensor [N, D]
-        adj:         Tensor [N, N]  预处理后的邻接矩阵
+        graph:       Tensor [N, N] adj 或 [2, E] edge_index
         labels:      Tensor [N]     整数标签
         train_mask:  Tensor [N]     bool
         optimizer:   torch.optim.Optimizer
@@ -25,7 +25,7 @@ def train_epoch(model, features, adj, labels, train_mask, optimizer):
     model.train()
     optimizer.zero_grad()
 
-    output = model(features, adj)
+    output = model(features, graph)
     loss = F.nll_loss(output[train_mask], labels[train_mask])
 
     loss.backward()
@@ -35,24 +35,24 @@ def train_epoch(model, features, adj, labels, train_mask, optimizer):
 
 
 @torch.no_grad()
-def evaluate(model, features, adj, labels, mask):
+def evaluate(model, features, graph, labels, mask):
     """评估准确率。
 
     返回：
         acc: float (0 ~ 1)
     """
     model.eval()
-    output = model(features, adj)
+    output = model(features, graph)
     pred = output.argmax(dim=1)
     correct = (pred[mask] == labels[mask]).sum().item()
     return correct / mask.sum().item()
 
 
 @torch.no_grad()
-def predict(model, features, adj):
+def predict(model, features, graph):
     """返回模型预测的类别标签 [N] 和概率 [N, C]"""
     model.eval()
-    output = model(features, adj)
+    output = model(features, graph)
     pred = output.argmax(dim=1)
     prob = torch.exp(output)
     return pred, prob

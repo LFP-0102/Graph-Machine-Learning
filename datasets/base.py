@@ -92,12 +92,19 @@ def load_kipf_data(root, dataset_name):
     labels[test_idx] = ty
     labels = np.argmax(labels, axis=1)                            # [N]
 
-    # ── 4. 构造邻接矩阵 ─────────────────────────────────────
+    # ── 4. 构造邻接矩阵 & edge_index ──────────────────────────
     num_nodes = len(graph)
     adj = np.zeros((num_nodes, num_nodes), dtype=np.float32)
+    edges = set()
     for i in graph:
         for j in graph[i]:
             adj[i][j] = 1.0
+            edges.add((i, j))
+            edges.add((j, i))                     # 无向边
+
+    edge_index = torch.tensor(
+        list(edges), dtype=torch.long
+    ).t().contiguous()                            # [2, E]
 
     # ── 5. 划分 train / val / test mask ─────────────────────
     split = _SPLITS[name]
@@ -122,6 +129,7 @@ def load_kipf_data(root, dataset_name):
         train_mask=torch.tensor(train_mask, dtype=torch.bool),
         val_mask=torch.tensor(val_mask, dtype=torch.bool),
         test_mask=torch.tensor(test_mask, dtype=torch.bool),
+        edge_index=edge_index,
         num_classes=int(labels.max() + 1),
         num_features=features.shape[1],
     )

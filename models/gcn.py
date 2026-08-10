@@ -24,6 +24,9 @@ class GCN(nn.Module):
         output_dim:  分类类别数
         dropout:     Dropout 率 (论文中 = 0.5)
     """
+
+    graph_type = "adj"              # runner 据此选择 graph 输入
+
     def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.5):
         super().__init__()
         self.dropout_rate = dropout
