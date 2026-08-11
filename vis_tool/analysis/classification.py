@@ -19,21 +19,9 @@ from typing import Optional, Sequence
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
-from sklearn.metrics import (
-    confusion_matrix,
-    roc_curve,
-    auc,
-    precision_recall_curve,
-    average_precision_score,
-)
-from sklearn.preprocessing import label_binarize
+from sklearn.metrics import confusion_matrix
 
-from vis_tool.config import (
-    CATEGORICAL_PALETTE,
-    get_cmap,
-    save_or_show,
-    to_numpy,
-)
+from vis_tool.config import save_or_show, to_numpy
 
 
 # ---------------------------------------------------------------------------
@@ -123,142 +111,6 @@ def plot_confusion_matrix(
             va="center", ha="left",
             fontsize=9, color="dimgray",
         )
-
-    fig.tight_layout()
-    return save_or_show(fig, save_path)
-
-
-# ---------------------------------------------------------------------------
-# ROC 曲线（多类 one-vs-rest）
-# ---------------------------------------------------------------------------
-def plot_roc_curves(
-    y_true: np.ndarray,
-    y_score: np.ndarray,
-    class_names: Optional[Sequence[str]] = None,
-    title: str = "ROC Curves (One-vs-Rest)",
-    save_path: Optional[str] = None,
-    figsize: tuple[float, float] = (8, 6),
-) -> plt.Figure:
-    """Plot ROC curves for multi-class classification (one-vs-rest).
-
-    Parameters
-    ----------
-    y_true : np.ndarray
-        Ground-truth labels, shape ``(N,)``.
-    y_score : np.ndarray
-        Predicted probabilities / logits, shape ``(N, C)``.
-    class_names : sequence of str, optional
-        Class names for the legend.
-    title : str
-        Plot title.
-    save_path : str, optional
-        Path to save the figure.
-    figsize : tuple
-        Figure size in inches.
-
-    Returns
-    -------
-    plt.Figure
-    """
-    y_true = to_numpy(y_true).astype(int)
-    y_score = to_numpy(y_score)
-
-    n_classes = y_score.shape[1]
-    labels = np.unique(y_true)
-
-    if class_names is None:
-        class_names = [str(i) for i in range(n_classes)]
-
-    y_bin = label_binarize(y_true, classes=labels)
-
-    colors = get_cmap(n_classes, categorical=True)
-
-    fig, ax = plt.subplots(figsize=figsize)
-
-    for i in range(n_classes):
-        if i >= len(labels):
-            continue
-        fpr, tpr, _ = roc_curve(y_bin[:, i], y_score[:, i])
-        roc_auc = auc(fpr, tpr)
-        ax.plot(fpr, tpr, color=colors[i], lw=2,
-                label=f"{class_names[i]} (AUC={roc_auc:.3f})")
-
-    # 随机基线
-    ax.plot([0, 1], [0, 1], "k--", lw=1, alpha=0.4, label="Random")
-    ax.set_xlim([-0.02, 1.02])
-    ax.set_ylim([-0.02, 1.02])
-    ax.set_xlabel("False Positive Rate")
-    ax.set_ylabel("True Positive Rate")
-    ax.set_title(title)
-    ax.legend(loc="lower right", fontsize=9)
-    ax.set_aspect("equal")
-
-    fig.tight_layout()
-    return save_or_show(fig, save_path)
-
-
-# ---------------------------------------------------------------------------
-# Precision-Recall 曲线（多类 one-vs-rest）
-# ---------------------------------------------------------------------------
-def plot_precision_recall_curves(
-    y_true: np.ndarray,
-    y_score: np.ndarray,
-    class_names: Optional[Sequence[str]] = None,
-    title: str = "Precision-Recall Curves",
-    save_path: Optional[str] = None,
-    figsize: tuple[float, float] = (8, 6),
-) -> plt.Figure:
-    """Plot Precision-Recall curves for multi-class classification.
-
-    Parameters
-    ----------
-    y_true : np.ndarray
-        Ground-truth labels, shape ``(N,)``.
-    y_score : np.ndarray
-        Predicted probabilities / logits, shape ``(N, C)``.
-    class_names : sequence of str, optional
-        Class names for the legend.
-    title : str
-        Plot title.
-    save_path : str, optional
-        Path to save the figure.
-    figsize : tuple
-        Figure size in inches.
-
-    Returns
-    -------
-    plt.Figure
-    """
-    y_true = to_numpy(y_true).astype(int)
-    y_score = to_numpy(y_score)
-
-    n_classes = y_score.shape[1]
-    labels = np.unique(y_true)
-
-    if class_names is None:
-        class_names = [str(i) for i in range(n_classes)]
-
-    y_bin = label_binarize(y_true, classes=labels)
-
-    colors = get_cmap(n_classes, categorical=True)
-
-    fig, ax = plt.subplots(figsize=figsize)
-
-    for i in range(n_classes):
-        if i >= len(labels):
-            continue
-        precision, recall, _ = precision_recall_curve(y_bin[:, i], y_score[:, i])
-        ap = average_precision_score(y_bin[:, i], y_score[:, i])
-        ax.plot(recall, precision, color=colors[i], lw=2,
-                label=f"{class_names[i]} (AP={ap:.3f})")
-
-    ax.set_xlim([-0.02, 1.02])
-    ax.set_ylim([-0.02, 1.02])
-    ax.set_xlabel("Recall")
-    ax.set_ylabel("Precision")
-    ax.set_title(title)
-    ax.legend(loc="lower left", fontsize=9)
-    ax.set_aspect("equal")
 
     fig.tight_layout()
     return save_or_show(fig, save_path)

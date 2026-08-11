@@ -18,33 +18,32 @@
     from experiments.runner import run_experiment
     from models.gcn import GCN
 
-    run_experiment(
-        model_class=GCN,
-        model_name="GCN",
-        dataset_name="cora",
-        ...
-    )
+    run_experiment(model_class=GCN, model_name="GCN", dataset_name="cora", ...)
 """
 from __future__ import annotations
 
+import csv
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
 
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 
-# ── 项目模块 ────────────────────────────────────────────────
+# ── 项目模块 ──────────────────────────────────────────────────
 from datasets.base import load_dataset
+from utils.checkpoint import save_checkpoint
 from utils.graph_utils import add_self_loops, normalize_adj
 from utils.paths import CHECKPOINT_DIR, OUTPUT_DIR, RESULTS_DIR, RUN_DIR, VIS_DIR, ensure_dirs
 from utils.seed import set_seed
 from utils.training import evaluate, predict, train_epoch
 
-# ── 可视化工具 ──────────────────────────────────────────────
+# ── 可视化工具 ────────────────────────────────────────────────
 from vis_tool import (
     plot_confusion_matrix,
     plot_embeddings,
@@ -56,9 +55,7 @@ from vis_tool import (
 from vis_tool.config import CATEGORICAL_PALETTE, save_or_show
 from vis_tool.statistics.result_table import save_result_table
 
-# ────────────────────────────────────────────────────────────
-# Cora 类别名称（全局常量）
-# ────────────────────────────────────────────────────────────
+# ── Cora 类别名称（全局常量）───────────────────────────────────
 CORA_CLASSES = [
     "Case_Based", "Genetic_Algorithms", "Neural_Networks",
     "Probabilistic_Methods", "Reinforcement_Learning",
@@ -66,9 +63,7 @@ CORA_CLASSES = [
 ]
 
 
-# ────────────────────────────────────────────────────────────
-# 核心运行函数
-# ────────────────────────────────────────────────────────────
+# ── 核心运行函数 ──────────────────────────────────────────────
 def run_experiment(
     model_class: Type[nn.Module],
     model_name: str,                # "GCN" | "GAT"
@@ -95,14 +90,13 @@ def run_experiment(
     返回包含 best_epoch, test_acc, history 等信息的字典，
     方便后续做多模型对比。
     """
-    # ── 0. 创建输出目录 ──────────────────────────────────────
+    # ── 0. 创建输出目录 ────────────────────────────────────────
     vis_out = VIS_DIR / model_name.lower()
     run_out = RUN_DIR / model_name.lower()
     ensure_dirs(vis_out, run_out)
-
     set_seed(seed)
 
-    # ── 1. 加载数据 ──────────────────────────────────────────
+    # ── 1. 加载数据 ────────────────────────────────────────────
     data = load_dataset(dataset_name)
     print(f"\n{'='*55}")
     print(f"  {model_name} on {dataset_name.capitalize()}")
@@ -110,7 +104,7 @@ def run_experiment(
           f"| {data.features.shape[0]} nodes")
     print(f"{'='*55}\n")
 
-    # ── 2. 预处理 & 模型 ─────────────────────────────────────
+    # ── 2. 预处理 & 模型 ───────────────────────────────────────
     graph_type = getattr(model_class, "graph_type", "adj")
 
     if graph_type == "adj":
@@ -123,40 +117,27 @@ def run_experiment(
         raise ValueError(f"不支持的 graph_type: {graph_type}")
 
     kwargs = model_kwargs or {}
-    model = model_class(
-        input_dim=data.num_features,
-        output_dim=data.num_classes,
-        **kwargs,
-    )
+    model_config = {"input_dim": data.num_features, "output_dim": data.num_classes, **kwargs}
+    model = model_class(**model_config)
     print(model)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr,
-                                 weight_decay=weight_decay)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
-    # ── 3. 训练 + 记录历史 ───────────────────────────────────
-    history = {
-        "train_loss": [], "train_acc": [],
-        "val_acc": [], "test_acc": [],
-    }
-    best_val_acc = 0.0
-    best_epoch = 0
-    best_state = None
-    counter = 0
+    # ── 3. 训练 + 记录历史 ─────────────────────────────────────
+    history = {"train_loss": [], "train_acc": [], "val_acc": [], "test_acc": []}
+    best_val_acc, best_epoch, best_state, counter = 0.0, 0, None, 0
 
     print(f"{'Epoch':>5}  {'Loss':>8}  {'Train':>7}  "
           f"{'Val':>7}  {'Test':>7}  {'Best':>7}")
     print("-" * 55)
 
-    for epoch in range(epochs):
-        loss = train_epoch(model, data.features, graph,
-                           data.labels, data.train_mask, optimizer)
+    start_time = time.time()
 
-        train_acc = evaluate(model, data.features, graph,
-                             data.labels, data.train_mask)
-        val_acc   = evaluate(model, data.features, graph,
-                             data.labels, data.val_mask)
-        test_acc  = evaluate(model, data.features, graph,
-                             data.labels, data.test_mask)
+    for epoch in range(epochs):
+        loss = train_epoch(model, data.features, graph, data.labels, data.train_mask, optimizer)
+        train_acc = evaluate(model, data.features, graph, data.labels, data.train_mask)
+        val_acc   = evaluate(model, data.features, graph, data.labels, data.val_mask)
+        test_acc  = evaluate(model, data.features, graph, data.labels, data.test_mask)
 
         history["train_loss"].append(loss)
         history["train_acc"].append(train_acc)
@@ -181,60 +162,50 @@ def run_experiment(
             print(f"Early stopping at epoch {epoch}")
             break
 
-    # ── 恢复验证集最佳模型 ──────────────────────────────────
+    # ── 恢复验证集最佳模型 ────────────────────────────────────
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    best_test = evaluate(model, data.features, graph,
-                         data.labels, data.test_mask)
+    best_test = evaluate(model, data.features, graph, data.labels, data.test_mask)
+    train_time = time.time() - start_time
+
+    print(f"\nTraining Time: {train_time:.2f}s")
     print(f"\nBest Epoch: {best_epoch}  |  "
           f"Val Acc: {best_val_acc:.4f}  |  Test Acc: {best_test:.4f}")
 
-    # ── 3.5 保存最佳模型 checkpoint ───────────────────────────
+    # ── 3.5 保存最佳模型 checkpoint ─────────────────────────────
     ensure_dirs(CHECKPOINT_DIR)
-    ckpt_name = f"best_{model_name.lower()}.pt"
-    ckpt_path = CHECKPOINT_DIR / ckpt_name
-    torch.save(
-        {
-            "model_state_dict": best_state,
-            "val_acc": best_val_acc,
-            "model_kwargs": kwargs,
-        },
-        ckpt_path,
-    )
+    ckpt_path = CHECKPOINT_DIR / f"best_{model_name.lower()}.pt"
+    save_checkpoint(ckpt_path, best_state, best_val_acc, model_config,
+                    model_name=model_name, dataset=dataset_name,
+                    test_acc=float(best_test), train_time=train_time)
     print(f"Checkpoint saved: {ckpt_path}")
 
-    # ── 4. 保存训练历史 CSV ──────────────────────────────────
-    import pandas as pd
+    # ── 4. 保存训练历史 CSV ────────────────────────────────────
     df_history = pd.DataFrame(history)
     df_history.index.name = "epoch"
     df_history.to_csv(run_out / "history.csv")
     print(f"训练历史已保存: {run_out / 'history.csv'}")
 
-    # ── 5. 预测 & 嵌入 ───────────────────────────────────────
+    # ── 5. 预测 & 嵌入 ─────────────────────────────────────────
     pred_labels, pred_probs = predict(model, data.features, graph)
-
-    # 类别名称（根据数据集自动选择）
     class_names = CORA_CLASSES if dataset_name == "cora" else None
 
-    # ── 6. 训练曲线（论文 Figure 3b）─────────────────────────
+    # ── 6. 训练曲线（论文 Figure 3b）───────────────────────────
     print("\n>>> 训练曲线 ...")
     plot_train_curves(
-        train_values=np.array([history["train_loss"],
-                                history["train_acc"]]),
-        val_values=np.array([history["val_acc"],
-                              history["test_acc"]]),
+        train_values=np.array([history["train_loss"], history["train_acc"]]),
+        val_values=np.array([history["val_acc"], history["test_acc"]]),
         metric_names=["Loss", "Accuracy"],
         title=f"{model_name} on {dataset_name.capitalize()} — Training Curves",
         save_path=str(vis_out / "training_curves.png"),
         mark_best=True,
     )
 
-    # ── 7. 隐藏层嵌入可视化（论文 Figure 3a）─────────────────
+    # ── 7. 隐藏层嵌入可视化（论文 Figure 3a）───────────────────
     if not skip_tsne and hasattr(model, "get_embeddings"):
         hidden_emb = model.get_embeddings(data.features, graph)
         print(f">>> t-SNE 嵌入可视化 (dim={hidden_emb.shape[1]}) ...")
-
         plot_embeddings(
             embeddings=hidden_emb,
             labels=data.labels,
@@ -245,7 +216,6 @@ def run_experiment(
             perplexity=30,
             random_state=42,
         )
-
         # UMAP（可选）
         try:
             print(">>> UMAP 嵌入可视化 ...")
@@ -261,7 +231,7 @@ def run_experiment(
         except ImportError:
             print("    (跳过 UMAP: pip install umap-learn)")
 
-    # ── 8. 混淆矩阵 ──────────────────────────────────────────
+    # ── 8. 混淆矩阵 ────────────────────────────────────────────
     print(">>> 混淆矩阵 ...")
     test_mask_np = data.test_mask.numpy()
     plot_confusion_matrix(
@@ -273,7 +243,7 @@ def run_experiment(
         save_path=str(vis_out / "confusion_matrix.png"),
     )
 
-    # ── 9. ROC / PR 曲线 ─────────────────────────────────────
+    # ── 9. ROC / PR 曲线 ───────────────────────────────────────
     print(">>> ROC 曲线 ...")
     plot_roc_curves(
         y_true=data.labels[test_mask_np],
@@ -292,7 +262,7 @@ def run_experiment(
         save_path=str(vis_out / "pr_curves.png"),
     )
 
-    # ── 10. 图拓扑（只画一次，共享的，不区分模型）────────────
+    # ── 10. 图拓扑（只画一次，共享的，不区分模型）───────────────
     if not skip_graph:
         print(">>> 图拓扑可视化 ...")
         adj_np_raw = data.adj.numpy()
@@ -300,15 +270,13 @@ def run_experiment(
         sub_G = nx.from_numpy_array(sub_adj)
         largest_cc = max(nx.connected_components(sub_G), key=len)
         sub_G = sub_G.subgraph(largest_cc).copy()
-        mapping = {old: new for new, old in
-                   enumerate(sorted(sub_G.nodes()))}
+        mapping = {old: new for new, old in enumerate(sorted(sub_G.nodes()))}
         sub_G = nx.relabel_nodes(sub_G, mapping)
 
         edge_index = np.array(list(sub_G.edges())).T
         sub_nodes = sorted(largest_cc)
         sub_labels = data.labels[sub_nodes].numpy()
-        sub_names = ([class_names[l] for l in sub_labels]
-                     if class_names else None)
+        sub_names = ([class_names[l] for l in sub_labels] if class_names else None)
 
         plot_graph(
             edge_index=edge_index,
@@ -323,7 +291,46 @@ def run_experiment(
             k=0.5,
         )
 
-    # ── 11. 每类准确率柱状图 ─────────────────────────────────
+    # ── 10.5 GAT 注意力可视化 ──────────────────────────────────
+    if hasattr(model, "get_attention_weights"):
+        print(">>> GAT 注意力权重可视化 ...")
+        avg_attn, all_attn = model.get_attention_weights(
+            data.features, data.edge_index if graph_type == "edge_index" else graph)
+        avg_attn_np = avg_attn.cpu().numpy()
+        ei_np = data.edge_index.numpy()
+
+        # 注意力摘要（多节点柱状图对比）
+        from vis_tool.analysis.attention import (
+            plot_attention_summary,
+            plot_attention_weights,
+            plot_node_attention_bars,
+            _dense_attn_to_edge_scores,
+        )
+        plot_attention_summary(
+            avg_attn_np, ei_np, focal_nodes=None, num_nodes=6, top_k=8,
+            title=f"GAT Attention Weights — {dataset_name.capitalize()}",
+            save_path=str(vis_out / "attention_summary.png"),
+        )
+
+        # 单节点细节（选最高度节点）
+        degrees = np.bincount(ei_np[0], minlength=avg_attn_np.shape[0])
+        hub_node = int(np.argmax(degrees))
+        plot_node_attention_bars(
+            avg_attn_np, ei_np, focal_node=hub_node, top_k=10,
+            title=f"GAT — Node #{hub_node} (hub) Neighbor Attention",
+            save_path=str(vis_out / "attention_hub_node.png"),
+        )
+
+        # 图拓扑 + attention 边着色
+        edge_scores = _dense_attn_to_edge_scores(avg_attn_np, ei_np)
+        plot_attention_weights(
+            edge_index=ei_np, attention_weights=edge_scores,
+            title=f"GAT Attention Edge Weights — {dataset_name.capitalize()}",
+            save_path=str(vis_out / "attention_graph.png"),
+            node_size=20, edge_scale=2.0,
+        )
+
+    # ── 11. 每类准确率柱状图 ───────────────────────────────────
     print(">>> 每类准确率 ...")
     per_class_acc = {}
     for lbl in range(data.num_classes):
@@ -342,34 +349,36 @@ def run_experiment(
     )
     ax.set_ylim(0, 1.05)
     ax.set_ylabel("Accuracy")
-    ax.set_title(f"{model_name} on {dataset_name.capitalize()} "
-                 f"— Per-Class Accuracy")
+    ax.set_title(f"{model_name} on {dataset_name.capitalize()} — Per-Class Accuracy")
     for bar, acc in zip(bars, per_class_acc.values()):
-        ax.text(bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + 0.02,
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.02,
                 f"{acc:.3f}", ha="center", va="bottom", fontsize=9)
     plt.xticks(rotation=30, ha="right", fontsize=8)
     fig.tight_layout()
     save_or_show(fig, str(vis_out / "per_class_accuracy.png"))
 
-    # ── 12. 保存结果表 ───────────────────────────────────────
+    # ── 12. 保存结果表 ─────────────────────────────────────────
+    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     result = {
         "model": model_name,
         "dataset": dataset_name,
         "test_accuracy": float(best_test),
         "best_val_accuracy": float(best_val_acc),
         "best_epoch": best_epoch,
+        "parameters": num_params,
+        "train_time": train_time,
         "seed": seed,
     }
     save_result_table([result], str(run_out / "results.csv"))
 
-    # ── 12.5 追加到集中 benchmark ─────────────────────────────
+    # ── 12.5 追加到集中 benchmark ──────────────────────────────
     ensure_dirs(RESULTS_DIR)
     benchmark_path = RESULTS_DIR / "benchmark.csv"
-    import csv
     write_header = not benchmark_path.exists()
     with open(benchmark_path, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["model", "dataset", "best_epoch", "val_acc", "test_acc", "seed"])
+        fieldnames = ["model", "dataset", "best_epoch", "val_acc",
+                       "test_acc", "parameters", "train_time", "seed"]
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         if write_header:
             writer.writeheader()
         writer.writerow({
@@ -378,11 +387,13 @@ def run_experiment(
             "best_epoch": best_epoch,
             "val_acc": f"{best_val_acc:.4f}",
             "test_acc": f"{best_test:.4f}",
+            "parameters": num_params,
+            "train_time": f"{train_time:.2f}",
             "seed": seed,
         })
     print(f"Benchmark appended: {benchmark_path}")
 
-    # ── 完成 ─────────────────────────────────────────────────
+    # ── 完成 ───────────────────────────────────────────────────
     print("\n" + "=" * 55)
     print(f"  [{model_name}] 输出目录: {vis_out}")
     print("=" * 55)
@@ -400,4 +411,6 @@ def run_experiment(
         "pred_labels": pred_labels,
         "pred_probs": pred_probs,
         "output_dir": vis_out,
+        "parameters": num_params,
+        "train_time": train_time,
     }

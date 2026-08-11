@@ -9,16 +9,36 @@ GAT 核心公式：
     h'_i = σ( Σ_j α_ij W h_j )                    (5)
 
 其中 "||" 表示向量拼接。
+
+支持两种图输入格式：
+    - edge_index [2, E]: 稀疏边列表（推荐，O(E) 内存）
+    - adj [N, N]:        稠密邻接矩阵（向后兼容，O(N²) 内存）
 """
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
+# ── scatter 工具（不依赖 torch_scatter） ───────────────────────
+def _scatter_max(src, index, n):
+    out = torch.full((n,), float("-inf"), device=src.device, dtype=src.dtype)
+    return out.scatter_reduce_(0, index, src, reduce="amax", include_self=False)
+
+
+def _scatter_sum(src, index, n):
+    out = torch.zeros(n, device=src.device, dtype=src.dtype)
+    return out.scatter_reduce_(0, index, src, reduce="sum", include_self=False)
+
+
+# ── 格式检测 ───────────────────────────────────────────────────
+def _is_edge_index(graph):
+    return graph.dim() == 2 and graph.size(0) == 2
+
+
 class GraphAttention(nn.Module):
     """单头图注意力层。
 
-    实现论文公式 (3)-(5)。使用稠密邻接矩阵作为 attention mask。
+    实现论文公式 (3)-(5)。输入可以是 edge_index 或 dense adj。
 
     参数：
         in_features:  输入特征维度
@@ -34,12 +54,7 @@ class GraphAttention(nn.Module):
         self.dropout_rate = dropout
         self.alpha = alpha
 
-        # W: 共享线性变换矩阵 [in_features, out_features]
         self.W = nn.Parameter(torch.FloatTensor(in_features, out_features))
-
-        # a: 注意力向量 [2 * out_features, 1]
-        #    前半部分用于「源节点」的 attention score
-        #    后半部分用于「目标节点」的 attention score
         self.a = nn.Parameter(torch.FloatTensor(2 * out_features, 1))
 
         self.leakyrelu = nn.LeakyReLU(alpha)
@@ -48,50 +63,81 @@ class GraphAttention(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        """Xavier 初始化参数。"""
         nn.init.xavier_uniform_(self.W)
         nn.init.xavier_uniform_(self.a)
 
-    def forward(self, x, adj):
+    def forward(self, x, graph, return_attention=False):
         """
         参数：
-            x:   节点特征 [N, F_in]
-            adj: 邻接矩阵 [N, N]  二值矩阵（含自环），用作 attention mask
-                 adj[i][j] > 0  → 节点 j 是节点 i 的邻居
+            x:     节点特征 [N, F_in]
+            graph: edge_index [2, E] 或 稠密邻接矩阵 [N, N]
+            return_attention: 若为 True，额外返回 attention 系数矩阵 [N, N]
 
         返回：
             h_prime: 更新后的节点表示 [N, F_out]
+            (h_prime, attention): 当 return_attention=True
         """
         N = x.size(0)
-
-        # ── 1. 线性变换 ───────────────────────────────────
-        #    公式 (3) 中的 W h_i
         Wh = torch.mm(x, self.W)                                    # [N, F_out]
 
-        # ── 2. 计算 attention scores ──────────────────────
-        #    用「分半 a」技巧避免构造 [N, N, 2F_out] 中间张量
-        #    e_ij = LeakyReLU(a_left^T Wh_i + a_right^T Wh_j)
         a_left = self.a[:self.out_features, 0]                       # [F_out]
         a_right = self.a[self.out_features:, 0]                     # [F_out]
 
-        attn_left = torch.mm(Wh, a_left.unsqueeze(1))               # [N, 1]
-        attn_right = torch.mm(Wh, a_right.unsqueeze(1))             # [N, 1]
+        if _is_edge_index(graph):
+            return self._forward_sparse(
+                N, Wh, a_left, a_right, graph, return_attention)
+        else:
+            return self._forward_dense(
+                N, Wh, a_left, a_right, graph, return_attention)
 
-        # 广播加法：e[i,j] = attn_left[i] + attn_right[j]
-        e = attn_left + attn_right.T                                # [N, N]
+    def _forward_dense(self, N, Wh, a_left, a_right, adj, return_attention):
+        """稠密路径：O(N²) 内存，向后兼容。"""
+        attn_left = torch.mv(Wh, a_left)                             # [N]
+        attn_right = torch.mv(Wh, a_right)                           # [N]
+
+        e = attn_left.unsqueeze(1) + attn_right.unsqueeze(0)         # [N, N]
         e = self.leakyrelu(e)
-
-        # ── 3. mask 非邻居 ────────────────────────────────
-        #    只允许 adj[i][j] > 0 的 j 参与 attention
         attention = e.masked_fill(adj == 0, float("-inf"))
-
-        # ── 4. softmax 归一化 (公式 4) ────────────────────
-        attention = F.softmax(attention, dim=1)                     # [N, N]
+        attention = F.softmax(attention, dim=1)
         attention = self.dropout(attention)
 
-        # ── 5. 加权聚合 (公式 5) ──────────────────────────
-        h_prime = torch.mm(attention, Wh)                           # [N, F_out]
+        h_prime = torch.mm(attention, Wh)
 
+        if return_attention:
+            return h_prime, attention
+        return h_prime
+
+    def _forward_sparse(self, N, Wh, a_left, a_right, edge_index, return_attention):
+        """稀疏路径：仅对边计算 attention，O(E) 内存。"""
+        src, dst = edge_index[0], edge_index[1]
+
+        # 添加自环（GAT 标准做法）
+        self_loop = torch.arange(N, device=edge_index.device)
+        src_all = torch.cat([src, self_loop])
+        dst_all = torch.cat([dst, self_loop])
+
+        # 边级 attention scores
+        a_src = (Wh[src_all] * a_left).sum(dim=1)                    # [E+N]
+        a_dst = (Wh[dst_all] * a_right).sum(dim=1)                   # [E+N]
+        e = self.leakyrelu(a_src + a_dst)                            # [E+N]
+
+        # Softmax per destination node (numerical stable)
+        e_max = _scatter_max(e, dst_all, N)                          # [N]
+        e_exp = torch.exp(e - e_max[dst_all])                        # [E+N]
+        e_sum = _scatter_sum(e_exp, dst_all, N)                      # [N]
+        alpha = e_exp / (e_sum[dst_all] + 1e-37)                     # [E+N]
+        alpha = self.dropout(alpha)
+
+        # 特征聚合
+        weighted = Wh[src_all] * alpha.unsqueeze(1)                  # [E+N, F_out]
+        device = Wh.device
+        h_prime = torch.zeros(N, self.out_features, device=device)
+        h_prime.index_add_(0, dst_all, weighted)
+
+        if return_attention:
+            attn_dense = torch.zeros(N, N, device=device)
+            attn_dense[dst_all, src_all] = alpha
+            return h_prime, attn_dense
         return h_prime
 
     def __repr__(self):
@@ -129,19 +175,28 @@ class MultiHeadGraphAttention(nn.Module):
             for _ in range(n_heads)
         ])
 
-    def forward(self, x, adj):
+    def forward(self, x, graph, return_attention=False):
         """
         返回：
             concat=True:  [N, n_heads * out_features]
             concat=False: [N, out_features]
+            return_attention=True 时额外返回各头 attention 系数列表
         """
-        if self.concat:
-            # 隐藏层：拼接所有头
-            return torch.cat([head(x, adj) for head in self.heads], dim=1)
+        if return_attention:
+            results = [head(x, graph, return_attention=True) for head in self.heads]
+            outputs = [r[0] for r in results]
+            attentions = [r[1] for r in results]
         else:
-            # 输出层：平均所有头
-            outputs = torch.stack([head(x, adj) for head in self.heads], dim=0)
-            return outputs.mean(dim=0)
+            outputs = [head(x, graph) for head in self.heads]
+
+        if self.concat:
+            out = torch.cat(outputs, dim=1)
+        else:
+            out = torch.stack(outputs, dim=0).mean(dim=0)
+
+        if return_attention:
+            return out, attentions
+        return out
 
     def __repr__(self):
         return (

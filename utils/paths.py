@@ -20,15 +20,15 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR   = ROOT_DIR / "data"
 CONFIG_DIR = ROOT_DIR / "configs"
 
-# ── 持久化产物 ──────────────────────────────────────────────
-CHECKPOINT_DIR = ROOT_DIR / "checkpoints"
-LOG_DIR        = ROOT_DIR / "logs"
-RESULTS_DIR    = ROOT_DIR / "results"
-
 # ── 输出 ────────────────────────────────────────────────────
 OUTPUT_DIR = ROOT_DIR / "outputs"
 RUN_DIR    = OUTPUT_DIR / "runs"              # 每次训练的运行结果
 VIS_DIR    = OUTPUT_DIR / "visualizations"    # 图表 / 嵌入可视化
+
+# ── 持久化产物 ──────────────────────────────────────────────
+CHECKPOINT_DIR = OUTPUT_DIR / "checkpoints"
+LOG_DIR        = ROOT_DIR / "logs"
+RESULTS_DIR    = OUTPUT_DIR / "results"
 
 
 def ensure_dirs(*dirs: Path) -> None:

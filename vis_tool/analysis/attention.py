@@ -22,7 +22,7 @@ import numpy as np
 from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
 
-from vis_tool.config import save_or_show, to_numpy
+from vis_tool.config import CATEGORICAL_PALETTE, save_or_show, to_numpy
 
 
 # ---------------------------------------------------------------------------
@@ -156,5 +156,153 @@ def plot_attention_weights(
     ax.set_title(title)
     ax.axis("off")
 
+    fig.tight_layout()
+    return save_or_show(fig, save_path)
+
+
+# ---------------------------------------------------------------------------
+# 稠密 attention → 边级 scores
+# ---------------------------------------------------------------------------
+def _dense_attn_to_edge_scores(avg_attn, edge_index):
+    """从稠密 attention 矩阵 [N, N] 提取每条边的 attention 分数.
+
+    avg_attn: np.ndarray [N, N]  多头平均 attention
+    edge_index: np.ndarray [2, E]
+    返回: np.ndarray [E]
+    """
+    return avg_attn[edge_index[0], edge_index[1]]
+
+
+# ---------------------------------------------------------------------------
+# 焦点节点邻居注意力柱状图
+# ---------------------------------------------------------------------------
+def plot_node_attention_bars(
+    avg_attn,
+    edge_index,
+    focal_node,
+    top_k=8,
+    title=None,
+    save_path=None,
+    figsize=(10, 5),
+    class_names=None,
+    node_labels=None,
+):
+    """展示单个焦点节点对其邻居的注意力权重（降序柱状图）。
+
+    avg_attn:    np.ndarray [N, N]  多头平均 attention
+    edge_index:  np.ndarray [2, E]
+    focal_node:  int  焦点节点 ID
+    top_k:       展示前 k 个邻居
+    """
+    avg_attn = to_numpy(avg_attn)
+    edge_index = to_numpy(edge_index).astype(int)
+
+    N = avg_attn.shape[0]
+    # 找 focal_node 的所有出边
+    src_mask = edge_index[0] == focal_node
+    dsts = edge_index[1][src_mask]
+    scores = avg_attn[focal_node, dsts]
+
+    # 按 attention 降序排列
+    order = np.argsort(scores)[::-1]
+    if top_k > 0:
+        order = order[:top_k]
+    neighbors = dsts[order]
+    values = scores[order]
+
+    # 标签
+    if node_labels is not None:
+        labels = [f"#{n} {node_labels[n]}" if n < len(node_labels) else f"Node {n}"
+                  for n in neighbors]
+    elif class_names is not None:
+        labels = [f"Node {n}" for n in neighbors]
+    else:
+        labels = [f"Neighbor {n}" for n in neighbors]
+
+    colors = [CATEGORICAL_PALETTE[i % len(CATEGORICAL_PALETTE)]
+              for i in range(len(neighbors))]
+
+    fig, ax = plt.subplots(figsize=figsize)
+    bars = ax.barh(range(len(neighbors)), values[::-1], color=colors[::-1])
+    ax.set_yticks(range(len(neighbors)))
+    ax.set_yticklabels(labels[::-1])
+    ax.set_xlabel("Attention Weight")
+    ax.set_xlim(0, max(values) * 1.2 if len(values) else 1.0)
+    ax.invert_yaxis()
+
+    for bar, val in zip(bars, values[::-1]):
+        ax.text(bar.get_width() + 0.005, bar.get_y() + bar.get_height() / 2,
+                f"{val:.3f}", va="center", fontsize=9)
+
+    self_val = avg_attn[focal_node, focal_node]
+    title = title or f"Node #{focal_node} — Top-{len(neighbors)} Neighbor Attention  (self: {self_val:.3f})"
+    ax.set_title(title)
+    fig.tight_layout()
+    return save_or_show(fig, save_path)
+
+
+# ---------------------------------------------------------------------------
+# 多节点注意力摘要
+# ---------------------------------------------------------------------------
+def plot_attention_summary(
+    avg_attn,
+    edge_index,
+    edge_index_full=None,
+    focal_nodes=None,
+    num_nodes=3,
+    top_k=8,
+    title="GAT — Multi-Node Attention Summary",
+    save_path=None,
+    class_names=None,
+):
+    """选取多个焦点节点，以子图网格展示各自的邻居注意力分布.
+
+    avg_attn:        np.ndarray [N, N]
+    edge_index:      np.ndarray [2, E]  用于提取边级 scores 画图
+    edge_index_full: np.ndarray [2, E]  用于图拓扑可视化（可选）
+    focal_nodes:     指定焦点节点列表, 为 None 则自动选高度节点
+    """
+    avg_attn = to_numpy(avg_attn)
+    edge_index = to_numpy(edge_index).astype(int)
+
+    if focal_nodes is None:
+        # 自动选: 出度最高的 num_nodes 个测试节点（或用全部）
+        degrees = np.bincount(edge_index[0], minlength=avg_attn.shape[0])
+        focal_nodes = np.argsort(degrees)[::-1][:num_nodes]
+
+    n_cols = min(3, len(focal_nodes))
+    n_rows = int(np.ceil(len(focal_nodes) / n_cols))
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 5 * n_rows))
+    if n_rows * n_cols == 1:
+        axes = np.array([axes])
+    axes = np.atleast_1d(axes).flatten()
+
+    for idx, (node, ax) in enumerate(zip(focal_nodes, axes)):
+        src_mask = edge_index[0] == node
+        dsts = edge_index[1][src_mask]
+        scores = avg_attn[node, dsts]
+
+        order = np.argsort(scores)[::-1][:top_k]
+        neighbors = dsts[order]
+        values = scores[order]
+
+        colors = [CATEGORICAL_PALETTE[i % len(CATEGORICAL_PALETTE)]
+                  for i in range(len(neighbors))]
+
+        ax.barh(range(len(neighbors)), values[::-1], color=colors[::-1])
+        ax.set_yticks(range(len(neighbors)))
+        ax.set_yticklabels([f"#{n}" for n in neighbors[::-1]], fontsize=8)
+        ax.set_xlim(0, max(values) * 1.2 if len(values) else 1.0)
+        ax.invert_yaxis()
+        ax.set_xlabel("Attention", fontsize=9)
+        self_val = avg_attn[node, node]
+        ax.set_title(f"Node #{node}  (self α={self_val:.3f})", fontsize=10)
+
+    # 隐藏多余子图
+    for ax in axes[len(focal_nodes):]:
+        ax.set_visible(False)
+
+    fig.suptitle(title, fontsize=14, y=1.01)
     fig.tight_layout()
     return save_or_show(fig, save_path)

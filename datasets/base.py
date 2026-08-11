@@ -77,18 +77,20 @@ def load_kipf_data(root, dataset_name):
     x, y, tx, ty, allx, ally, graph, test_idx = objects
 
     # ── 2. 合并特征矩阵 ─────────────────────────────────────
-    # allx: scipy.sparse.csr_matrix (train+val 节点)
+    # allx: scipy.sparse.csr_matrix (train+val+unlabeled 节点)
     # tx:   scipy.sparse.csr_matrix (test 节点, 按 test.index 顺序)
-    features = np.vstack((allx.toarray(), tx.toarray()))          # [N, D]
-
-    # ── 3. 重排序 test 节点 ─────────────────────────────────
-    # test.index[i] 指定 tx[i] 在原始图中的真实索引
-    # 将 tx[i] 放回图中位置 test_idx[i]
+    # 直接分配 num_nodes 行再填充，避免 vstack 行数 ≠ N 的问题
+    num_nodes = len(graph)
+    num_features_dim = allx.shape[1]
+    features = np.zeros((num_nodes, num_features_dim), dtype=np.float32)
+    features[:allx.shape[0]] = allx.toarray()
     features[test_idx] = tx.toarray()
 
     # ── 4. 合并标签 ─────────────────────────────────────────
     # ally, ty: numpy one-hot
-    labels = np.vstack((ally, ty))                                # [N, C]
+    num_classes = ally.shape[1]
+    labels = np.zeros((num_nodes, num_classes), dtype=np.float32)
+    labels[:ally.shape[0]] = ally
     labels[test_idx] = ty
     labels = np.argmax(labels, axis=1)                            # [N]
 

@@ -9,13 +9,7 @@ class MeanAggregator(nn.Module):
         self.input_dim = input_dim
 
     def forward(self, neighbor_features):
-        """
-        neighbor_features: [neighbor_num, feature_dim]
-        return: [feature_dim]
-        """
+        """neighbor_features: [neighbor_num, feature_dim] → [feature_dim]"""
         if neighbor_features.numel() == 0:
-            return torch.zeros(
-                self.input_dim,
-                device=neighbor_features.device,
-            )
+            return torch.zeros(self.input_dim, device=neighbor_features.device)
         return torch.mean(neighbor_features, dim=0)

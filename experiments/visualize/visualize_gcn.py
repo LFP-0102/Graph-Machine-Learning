@@ -2,7 +2,7 @@
 GCN 论文图表复现 + 自定义可视化。
 
 用法：
-    PYTHONPATH=. python experiments/visualize_gcn.py
+    PYTHONPATH=. python experiments/visualize/visualize_gcn.py
 
 输出：
     outputs/visualizations/gcn/   （所有图表）
