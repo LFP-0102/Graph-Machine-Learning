@@ -1,73 +1,76 @@
-"""
-GAT 训练入口 —— Cora 数据集
+"""使用 PyTorch 复现 PetarV-/GAT 的引文网络训练脚本。"""
+import argparse
+import sys
+from pathlib import Path
 
-复现论文：Graph Attention Networks (Veličković et al., ICLR 2018)
-
-输出：Loss / Val Acc / Best Val Acc / Test Acc / Best checkpoint
-"""
 import torch
+import torch.nn.functional as F
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from datasets.base import load_dataset
 from models.gat import GAT
-from utils.checkpoint import save_checkpoint
-from utils.paths import CHECKPOINT_DIR, ensure_dirs
 from utils.seed import set_seed
-from utils.training import train_epoch, evaluate
 
-# ── 配置 ──────────────────────────────────────────────────────
-set_seed(42)
 
-# ── 1. 加载数据 ───────────────────────────────────────────────
-data = load_dataset("cora")
-print(f"Cora: {data.num_features} features, {data.num_classes} classes, "
-      f"{data.features.shape[0]} nodes")
-print(f"Features: {list(data.features.shape)}")
-print(f"Labels:   {list(data.labels.shape)}")
-print(f"Edges:    {list(data.edge_index.shape)}")
+@torch.no_grad()
+def evaluate(model, features, edge_index, labels, mask):
+    model.eval()
+    logits = model(features, edge_index)
+    loss = F.nll_loss(logits[mask], labels[mask])
+    accuracy = (logits[mask].argmax(1) == labels[mask]).float().mean()
+    return loss.item(), accuracy.item()
 
-# ── 2. 创建模型 ───────────────────────────────────────────────
-model = GAT(input_dim=data.num_features, hidden_dim=8,
-            output_dim=data.num_classes, n_heads=8, dropout=0.6)
-print(model)
-print(f"Parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
-optimizer = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=5e-4)
 
-# ── 3. 训练 ───────────────────────────────────────────────────
-best_val_acc, best_state, counter = 0.0, None, 0
-patience, epochs = 100, 200
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", choices=("cora", "citeseer", "pubmed"), default="cora")
+    parser.add_argument("--seed", type=int, default=123)
+    parser.add_argument("--epochs", type=int, default=100000)
+    return parser.parse_args()
 
-for epoch in range(1, epochs + 1):
-    loss = train_epoch(model, data.features, data.edge_index,
-                       data.labels, data.train_mask, optimizer)
-    val_acc = evaluate(model, data.features, data.edge_index,
-                       data.labels, data.val_mask)
 
-    if val_acc > best_val_acc:
-        best_val_acc = val_acc
-        best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-        counter = 0
-    else:
-        counter += 1
+if __name__ == "__main__":
+    args = parse_args()
+    set_seed(args.seed)
+    data = load_dataset(args.dataset)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    features, labels = data.features.to(device), data.labels.to(device)
+    edge_index = data.edge_index.to(device)
+    train_mask = data.train_mask.to(device)
+    val_mask = data.val_mask.to(device)
+    test_mask = data.test_mask.to(device)
 
-    if epoch % 10 == 0:
-        print(f"Epoch {epoch:3d} | Loss: {loss:.4f} | "
-              f"Val Acc: {val_acc:.4f} | Best: {best_val_acc:.4f}")
+    model = GAT(data.num_features, 8, data.num_classes, n_heads=8, dropout=0.6).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.005)
+    best_state = None
+    min_val_loss, max_val_accuracy, stale_epochs = float("inf"), 0.0, 0
 
-    if counter >= patience:
-        print(f"Early stopping at epoch {epoch}")
-        break
+    for epoch in range(args.epochs):
+        model.train()
+        optimizer.zero_grad()
+        logits = model(features, edge_index)
+        cross_entropy = F.nll_loss(logits[train_mask], labels[train_mask])
+        # 官方 BaseGAttN 代码对全部可训练参数施加 L2 正则化。
+        loss = cross_entropy + 5e-4 * 0.5 * sum(parameter.square().sum() for parameter in model.parameters())
+        loss.backward()
+        optimizer.step()
 
-# ── 4. 保存 checkpoint ────────────────────────────────────────
-ensure_dirs(CHECKPOINT_DIR)
-ckpt_path = CHECKPOINT_DIR / "best_gat.pt"
-save_checkpoint(ckpt_path, best_state, best_val_acc, {
-    "input_dim": data.num_features, "hidden_dim": 8,
-    "output_dim": data.num_classes, "n_heads": 8, "dropout": 0.6,
-})
-print(f"Checkpoint saved: {ckpt_path}")
+        val_loss, val_accuracy = evaluate(model, features, edge_index, labels, val_mask)
+        train_accuracy = (logits[train_mask].argmax(1) == labels[train_mask]).float().mean().item()
+        print(f"轮次 {epoch + 1:05d} | 训练损失={loss.detach().item():.5f} | 训练准确率={train_accuracy:.5f} | 验证损失={val_loss:.5f} | 验证准确率={val_accuracy:.5f}")
+        if val_accuracy >= max_val_accuracy or val_loss <= min_val_loss:
+            if val_accuracy >= max_val_accuracy and val_loss <= min_val_loss:
+                best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+            max_val_accuracy = max(max_val_accuracy, val_accuracy)
+            min_val_loss = min(min_val_loss, val_loss)
+            stale_epochs = 0
+        else:
+            stale_epochs += 1
+            if stale_epochs == 100:
+                print("触发早停。")
+                break
 
-# ── 5. 测试 ───────────────────────────────────────────────────
-model.load_state_dict(best_state)
-test_acc = evaluate(model, data.features, data.edge_index,
-                    data.labels, data.test_mask)
-print(f"\nTest Acc: {test_acc:.4f}")
+    model.load_state_dict(best_state)
+    test_loss, test_accuracy = evaluate(model, features, edge_index, labels, test_mask)
+    print(f"测试集结果：损失={test_loss:.5f} | 准确率={test_accuracy:.5f}")

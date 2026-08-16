@@ -1,78 +1,68 @@
-"""
-GCN 训练入口 —— Cora 数据集。
+"""使用 PyTorch 复现 tkipf/gcn 的引文网络训练脚本。"""
+import argparse
+import sys
+from pathlib import Path
 
-复现论文：Semi-Supervised Classification with Graph Convolutional Networks
-            (Kipf & Welling, ICLR 2017)
-
-两层 GCN：
-    Z = softmax(Â ReLU(Â X W₀) W₁)
-    其中 Â = D^(-1/2)(A+I)D^(-1/2)
-"""
 import torch
+import torch.nn.functional as F
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from datasets.base import load_dataset
 from models.gcn import GCN
-from utils.checkpoint import save_checkpoint
-from utils.graph_utils import normalize_adj
-from utils.paths import CHECKPOINT_DIR, ensure_dirs
+from utils.graph_utils import normalized_sparse_edge_index
 from utils.seed import set_seed
-from utils.training import train_epoch, evaluate
 
-# ── 配置 ──────────────────────────────────────────────────────
-set_seed(42)
 
-# ── 1. 加载数据 ───────────────────────────────────────────────
-data = load_dataset("cora")
-print(f"Cora: {data.num_features} features, "
-      f"{data.num_classes} classes, "
-      f"{data.features.shape[0]} nodes")
-print(f"Features: {list(data.features.shape)}")
-print(f"Labels:   {list(data.labels.shape)}")
-print(f"Adj:      {list(data.adj.shape)}")
+@torch.no_grad()
+def evaluate(model, features, adjacency, labels, mask):
+    model.eval()
+    logits = model(features, adjacency)
+    loss = F.nll_loss(logits[mask], labels[mask])
+    accuracy = (logits[mask].argmax(1) == labels[mask]).float().mean()
+    return loss.item(), accuracy.item()
 
-# ── 2. 预处理邻接矩阵 ─────────────────────────────────────────
-# GCN 公式: Â = D^(-1/2)(A+I)D^(-1/2)
-adj = torch.FloatTensor(normalize_adj(data.adj.numpy()))
 
-# ── 3. 创建模型 ───────────────────────────────────────────────
-model = GCN(input_dim=data.num_features, hidden_dim=16, output_dim=data.num_classes, dropout=0.5)
-print(model)
-optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=5e-4)
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", choices=("cora", "citeseer", "pubmed"), default="cora")
+    parser.add_argument("--seed", type=int, default=123)
+    parser.add_argument("--epochs", type=int, default=200)
+    return parser.parse_args()
 
-# ── 4. 训练 ───────────────────────────────────────────────────
-best_val_acc = 0.0
-best_state = None
-patience, counter, epochs = 100, 0, 200
 
-for epoch in range(1, epochs + 1):
-    loss = train_epoch(model, data.features, adj, data.labels, data.train_mask, optimizer)
-    val_acc = evaluate(model, data.features, adj, data.labels, data.val_mask)
+if __name__ == "__main__":
+    args = parse_args()
+    set_seed(args.seed)
+    data = load_dataset(args.dataset)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    features, labels = data.features.to(device), data.labels.to(device)
+    adjacency = normalized_sparse_edge_index(data.edge_index, features.size(0), device)
+    train_mask = data.train_mask.to(device)
+    val_mask = data.val_mask.to(device)
+    test_mask = data.test_mask.to(device)
 
-    if val_acc > best_val_acc:
-        best_val_acc = val_acc
-        best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-        counter = 0
-    else:
-        counter += 1
+    model = GCN(data.num_features, 16, data.num_classes, dropout=0.5).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    validation_losses = []
 
-    if epoch % 10 == 0:
-        print(f"Epoch {epoch:3d} | Loss: {loss:.4f} | "
-              f"Val Acc: {val_acc:.4f} | Best: {best_val_acc:.4f}")
+    for epoch in range(args.epochs):
+        model.train()
+        optimizer.zero_grad()
+        logits = model(features, adjacency)
+        cross_entropy = F.nll_loss(logits[train_mask], labels[train_mask])
+        # 原始代码只对第一层图卷积的权重施加 L2 正则化。
+        loss = cross_entropy + 5e-4 * 0.5 * model.gc1.weight.square().sum()
+        loss.backward()
+        optimizer.step()
 
-    if counter >= patience:
-        print(f"Early stopping at epoch {epoch}")
-        break
+        val_loss, val_accuracy = evaluate(model, features, adjacency, labels, val_mask)
+        validation_losses.append(val_loss)
+        train_accuracy = (logits[train_mask].argmax(1) == labels[train_mask]).float().mean().item()
+        print(f"轮次 {epoch + 1:04d} | 训练损失={loss.detach().item():.5f} | 训练准确率={train_accuracy:.5f} | 验证损失={val_loss:.5f} | 验证准确率={val_accuracy:.5f}")
+        if epoch > 10 and val_loss > sum(validation_losses[-11:-1]) / 10:
+            print("触发早停。")
+            break
 
-# ── 5. 保存最佳模型 ───────────────────────────────────────────
-ensure_dirs(CHECKPOINT_DIR)
-ckpt_path = CHECKPOINT_DIR / "best_gcn.pt"
-save_checkpoint(ckpt_path, best_state, best_val_acc, {
-    "input_dim": data.num_features, "hidden_dim": 16,
-    "output_dim": data.num_classes, "dropout": 0.5,
-})
-print(f"Checkpoint saved: {ckpt_path}")
-
-# ── 6. 测试（使用验证集最佳模型）───────────────────────────────
-model.load_state_dict(best_state)
-test_acc = evaluate(model, data.features, adj, data.labels, data.test_mask)
-print(f"\nTest Acc: {test_acc:.4f}")
+    test_loss, test_accuracy = evaluate(model, features, adjacency, labels, test_mask)
+    print(f"测试集结果：损失={test_loss:.5f} | 准确率={test_accuracy:.5f}")

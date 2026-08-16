@@ -1,122 +1,91 @@
-"""
-Multi-Seed Experiment
+"""使用多个随机种子重复运行官方风格的 GraphSAGE PPI 实验。"""
+import argparse
+import re
+import subprocess
+import sys
+from pathlib import Path
 
-在 Cora 上对 GCN / GraphSAGE / GAT 分别以 5 个随机种子重复训练，
-统计 Mean Accuracy ± Std。
-
-输出:
-  outputs/results/multi_seed_raw.csv     — 原始记录 (seed, model, accuracy, params, time)
-  outputs/results/multi_seed_summary.csv  — 按模型汇总 (mean, std, params, time)
-"""
-import time
-import torch
 import pandas as pd
-import numpy as np
-
-from datasets.base import load_dataset
-from models.gcn import GCN
-from models.graphsage import GraphSAGE
-from models.gat import GAT
-from utils.graph_utils import normalize_adj
-from utils.paths import RESULTS_DIR, ensure_dirs
-from utils.seed import set_seed
-from utils.training import train_epoch, evaluate
-
-# ── 配置 ──────────────────────────────────────────────────────
-SEEDS = [10, 20, 30, 40, 50]
-EPOCHS = 200
-
-# GAT 论文用更小的 lr
-LR_MAP = {"GCN": 0.01, "GraphSAGE": 0.01, "GAT": 0.005}
 
 
-def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+ROOT_DIR = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT_DIR))
+TRAIN_SCRIPT = ROOT_DIR / "experiments" / "train" / "train_graphsage.py"
+RESULTS_DIR = ROOT_DIR / "outputs" / "results"
+OUTPUT_DIR = ROOT_DIR / "outputs"
 
 
-# ── 数据 ──────────────────────────────────────────────────────
-data = load_dataset("cora")
-x, y = data.features, data.labels
-adj = torch.FloatTensor(normalize_adj(data.adj.numpy()))
-edge_index = data.edge_index
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--train-prefix", required=True)
+    # 官方 GraphSAGE 固定使用 seed=123，纳入默认列表以便汇总均值贴近论文值。
+    parser.add_argument("--seeds", type=int, nargs="+", default=[10, 20, 30, 40, 50, 123])
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="保留以便与其他批量脚本使用方式一致；该脚本本来就会覆盖本轮结果。",
+    )
+    return parser.parse_args()
 
 
-# ── 模型工厂 ───────────────────────────────────────────────────
-def build_models():
-    return {
-        "GCN": GCN(input_dim=data.num_features, hidden_dim=16,
-                   output_dim=data.num_classes, dropout=0.5),
-        "GraphSAGE": GraphSAGE(input_dim=data.num_features, hidden_dim=16,
-                               output_dim=data.num_classes, dropout=0.5),
-        "GAT": GAT(input_dim=data.num_features, hidden_dim=8,
-                   output_dim=data.num_classes, n_heads=8, dropout=0.6),
-    }
+def main():
+    args = parse_args()
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for seed in args.seeds:
+        command = [
+            sys.executable,
+            str(TRAIN_SCRIPT),
+            "--train-prefix", args.train_prefix,
+            "--sigmoid",
+            "--seed", str(seed),
+            "--epochs", str(args.epochs),
+            "--batch-size", str(args.batch_size),
+        ]
+        print(f"\n{'=' * 56}\nGraphSAGE PPI | 随机种子={seed}\n{'=' * 56}")
+        completed = subprocess.run(
+            command, cwd=ROOT_DIR, check=True, capture_output=True, text=True
+        )
+        print(completed.stdout, end="")
+        match = re.search(
+            r"测试 micro-F1=(?P<micro>\d+\.\d+) \| macro-F1=(?P<macro>\d+\.\d+) \| 用时=(?P<time>\d+\.\d+)s",
+            completed.stdout,
+        )
+        if match is None:
+            raise RuntimeError("无法从 GraphSAGE PPI 训练输出中解析评估指标")
+        rows.append({
+            "seed": seed,
+            "test_micro_f1": float(match["micro"]),
+            "test_macro_f1": float(match["macro"]),
+            "train_time": float(match["time"]),
+        })
+
+    raw = pd.DataFrame(rows)
+    raw.insert(1, "epochs", args.epochs)
+    raw_path = RESULTS_DIR / "graphsage_ppi_multi_seed_raw.csv"
+    raw.to_csv(raw_path, index=False)
+    summary = pd.DataFrame([{
+        "model": "GraphSAGE Mean",
+        "runs": len(raw),
+        "epochs": args.epochs,
+        "micro_f1_mean": raw["test_micro_f1"].mean(),
+        "micro_f1_std": raw["test_micro_f1"].std(ddof=1) if len(raw) > 1 else 0.0,
+        "macro_f1_mean": raw["test_macro_f1"].mean(),
+        "macro_f1_std": raw["test_macro_f1"].std(ddof=1) if len(raw) > 1 else 0.0,
+    }])
+    summary_path = RESULTS_DIR / "graphsage_ppi_multi_seed_summary.csv"
+    summary.to_csv(summary_path, index=False)
+    from vis_tool.statistics import plot_ppi_benchmark
+    plot_ppi_benchmark(raw, OUTPUT_DIR / "visualizations" / "benchmark_summary")
+    record = summary.iloc[0]
+    print(
+        f"\nMicro-F1：{record['micro_f1_mean']:.4f} +/- {record['micro_f1_std']:.4f}\n"
+        f"Macro-F1：{record['macro_f1_mean']:.4f} +/- {record['macro_f1_std']:.4f}\n"
+        f"原始结果：{raw_path}\n汇总结果：{summary_path}"
+    )
 
 
-# ── 单次训练 ───────────────────────────────────────────────────
-def run_one(model_name, model):
-    lr = LR_MAP.get(model_name, 0.01)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=5e-4)
-    graph = adj if model_name == "GCN" else edge_index
-
-    best_val = 0.0
-    best_state = None
-
-    t_start = time.time()
-    for epoch in range(EPOCHS):
-        train_epoch(model, x, graph, y, data.train_mask, optimizer)
-        val_acc = evaluate(model, x, graph, y, data.val_mask)
-
-        if val_acc > best_val:
-            best_val = val_acc
-            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-
-    train_time = time.time() - t_start
-    model.load_state_dict(best_state)
-    test_acc = evaluate(model, x, graph, y, data.test_mask)
-    n_params = count_parameters(model)
-    return test_acc, train_time, n_params
-
-
-# ── 主实验 ─────────────────────────────────────────────────────
-results = []
-
-for seed in SEEDS:
-    print(f"\n{'='*50}")
-    print(f"  Seed: {seed}")
-    print(f"{'='*50}")
-
-    set_seed(seed)
-    models = build_models()
-
-    for name, model in models.items():
-        print(f"  Training {name} ... ", end="", flush=True)
-        acc, elapsed, params = run_one(name, model)
-        print(f"{acc:.4f}  ({elapsed:.1f}s, {params} params)")
-        results.append([seed, name, acc, elapsed, params])
-
-# ── 保存原始数据 ────────────────────────────────────────────────
-ensure_dirs(RESULTS_DIR)
-df = pd.DataFrame(results, columns=["seed", "model", "accuracy", "train_time", "parameters"])
-df.to_csv(RESULTS_DIR / "multi_seed_raw.csv", index=False)
-print(f"\nRaw data saved: {RESULTS_DIR / 'multi_seed_raw.csv'}")
-
-# ── 汇总 ──────────────────────────────────────────────────────
-summary = df.groupby("model").agg(
-    mean_acc=("accuracy", "mean"),
-    std_acc=("accuracy", "std"),
-    params=("parameters", "first"),
-    time=("train_time", "mean"),
-).round(4)
-summary["params"] = summary["params"].astype(int)
-
-print(f"\n{'='*55}")
-print("  Multi-Seed Summary")
-print(f"{'='*55}")
-print(f"{'Model':12} {'Accuracy':>14} {'Params':>8} {'Time':>8}")
-print("-" * 55)
-for model_name, row in summary.iterrows():
-    print(f"{model_name:12} {row['mean_acc']:.4f} ± {row['std_acc']:.4f}  "
-          f"{row['params']:>5}  {row['time']:>6.1f}s")
-summary.to_csv(RESULTS_DIR / "multi_seed_summary.csv")
-print(f"\nSummary saved: {RESULTS_DIR / 'multi_seed_summary.csv'}")
+if __name__ == "__main__":
+    main()

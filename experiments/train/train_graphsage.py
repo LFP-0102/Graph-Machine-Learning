@@ -1,109 +1,100 @@
-"""
-GraphSAGE 训练入口 —— Cora 数据集
+"""使用 PyTorch 复现 GraphSAGE 的监督式 PPI 实验。
 
-Paper: Inductive Representation Learning on Large Graphs (Hamilton et al., NeurIPS 2017)
-
-输出：Loss / Train Acc / Val Acc / Best Val Acc / Test Acc / Parameters / Training Time / Best checkpoint
+输入严格遵循 williamleif/GraphSAGE：<prefix>-G.json、<prefix>-id_map.json、
+<prefix>-class_map.json 与 <prefix>-feats.npy。
 """
+import argparse
+import sys
 import time
+from pathlib import Path
+
 import torch
 import torch.nn.functional as F
+from sklearn.metrics import f1_score
 
-from datasets.base import load_dataset
-from models.graphsage import GraphSAGE
-from utils.checkpoint import save_checkpoint
-from utils.paths import CHECKPOINT_DIR, ensure_dirs
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from datasets.graphsage_json import load_graphsage_json
+from models.graphsage_official import OfficialGraphSAGE
 from utils.seed import set_seed
 
-# ── 工具函数 ──────────────────────────────────────────────────
-def accuracy(pred, label):
-    return (pred == label).float().mean().item()
 
-def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--train-prefix", required=True)
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--max-degree", type=int, default=128)
+    parser.add_argument("--samples-1", type=int, default=25)
+    parser.add_argument("--samples-2", type=int, default=10)
+    parser.add_argument("--dim-1", type=int, default=128)
+    parser.add_argument("--dim-2", type=int, default=128)
+    parser.add_argument("--learning-rate", type=float, default=0.01)
+    parser.add_argument("--dropout", type=float, default=0.0)
+    parser.add_argument("--weight-decay", type=float, default=0.0)
+    parser.add_argument("--seed", type=int, default=123)
+    parser.add_argument("--sigmoid", action="store_true")
+    return parser.parse_args()
 
-# ── 配置 ──────────────────────────────────────────────────────
-set_seed(42)
 
-# ── 1. 加载数据 ───────────────────────────────────────────────
-data = load_dataset("cora")
-print("=" * 50)
-print("Model: GraphSAGE")
-print("Dataset: Cora\n")
-print(f"Features: {data.features.shape[0]} × {data.features.shape[1]}")
-print(f"Classes: {data.num_classes}")
-print(f"Edges: {data.edge_index.shape[1]}")
-print("=" * 50)
-
-# ── 2. 创建模型 ───────────────────────────────────────────────
-model = GraphSAGE(input_dim=data.num_features, hidden_dim=16, output_dim=data.num_classes, dropout=0.5)
-print(model)
-print(f"Parameters: {count_parameters(model)}")
-optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=5e-4)
-
-# ── 3. 训练 ───────────────────────────────────────────────────
-start_time = time.time()
-best_val_acc, best_epoch, best_state = 0.0, 0, None
-patience, counter, epochs = 100, 0, 200
-
-for epoch in range(1, epochs + 1):
-    model.train()
-    optimizer.zero_grad()
-    out = model(data.features, data.edge_index)
-    loss = F.nll_loss(out[data.train_mask], data.labels[data.train_mask])
-    loss.backward()
-    optimizer.step()
-
-    # evaluation
+@torch.no_grad()
+def evaluate(model, features, labels, nodes, adjacency, sigmoid, batch_size, device):
     model.eval()
-    with torch.no_grad():
-        pred = out.argmax(dim=1)
-        train_acc = accuracy(pred[data.train_mask], data.labels[data.train_mask])
-        val_acc = accuracy(pred[data.val_mask], data.labels[data.val_mask])
-
-    # 保存最佳模型
-    if val_acc > best_val_acc:
-        best_val_acc = val_acc
-        best_epoch = epoch
-        best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-        counter = 0
+    predictions, targets = [], []
+    for start in range(0, nodes.numel(), batch_size):
+        batch = nodes[start:start + batch_size].to(device)
+        predictions.append(model(features, adjacency, batch).cpu())
+        targets.append(labels[batch.cpu()])
+    scores = torch.cat(predictions)
+    truth = torch.cat(targets)
+    if sigmoid:
+        predicted = (scores.sigmoid() > 0.5).numpy()
+        truth = truth.numpy()
     else:
-        counter += 1
+        predicted = scores.argmax(dim=1).numpy()
+        truth = truth.argmax(dim=1).numpy()
+    return (
+        f1_score(truth, predicted, average="micro", zero_division=0),
+        f1_score(truth, predicted, average="macro", zero_division=0),
+    )
 
-    if epoch % 10 == 0:
-        print(f"Epoch {epoch:3d} | Loss: {loss.item():.4f} | Train Acc: {train_acc:.4f} | Val Acc: {val_acc:.4f} | Best: {best_val_acc:.4f}")
 
-    if counter >= patience:
-        print(f"Early stopping at epoch {epoch}")
-        break
+if __name__ == "__main__":
+    args = parse_args()
+    set_seed(args.seed)
+    data = load_graphsage_json(args.train_prefix, max_degree=args.max_degree, seed=args.seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    features = data.features.to(device)
+    labels = data.labels
+    train_adjacency = data.train_adj.to(device)
+    test_adjacency = data.test_adj.to(device)
+    model = OfficialGraphSAGE(
+        data.num_features,
+        data.num_classes,
+        dims=(args.dim_1, args.dim_2),
+        samples=(args.samples_1, args.samples_2),
+        dropout=args.dropout,
+    ).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+    started = time.time()
 
-train_time = time.time() - start_time
+    for epoch in range(1, args.epochs + 1):
+        model.train()
+        losses = []
+        train_nodes = data.train_nodes[torch.randperm(data.train_nodes.numel())]
+        for start in range(0, train_nodes.numel(), args.batch_size):
+            batch = train_nodes[start:start + args.batch_size].to(device)
+            logits = model(features, train_adjacency, batch)
+            batch_labels = labels[batch.cpu()].to(device)
+            loss = F.binary_cross_entropy_with_logits(logits, batch_labels) if args.sigmoid else F.cross_entropy(logits, batch_labels.argmax(dim=1))
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_value_(model.parameters(), 5.0)
+            optimizer.step()
+            losses.append(loss.item())
+        val_micro, val_macro = evaluate(model, features, labels, data.val_nodes, test_adjacency, args.sigmoid, args.batch_size, device)
+        print(f"轮次 {epoch:03d} | 损失={sum(losses) / len(losses):.4f} | 验证 micro-F1={val_micro:.4f} | 验证 macro-F1={val_macro:.4f}")
 
-# ── 4. 测试最佳模型 ────────────────────────────────────────────
-model.load_state_dict(best_state)
-model.eval()
-with torch.no_grad():
-    out = model(data.features, data.edge_index)
-    pred = out.argmax(dim=1)
-    test_acc = accuracy(pred[data.test_mask], data.labels[data.test_mask])
-
-# ── 5. 保存 checkpoint ────────────────────────────────────────
-ensure_dirs(CHECKPOINT_DIR)
-ckpt_path = CHECKPOINT_DIR / "best_graphsage.pt"
-save_checkpoint(ckpt_path, best_state, best_val_acc, {
-    "input_dim": data.num_features, "hidden_dim": 16,
-    "output_dim": data.num_classes, "dropout": 0.5,
-}, model_name="GraphSAGE", dataset="Cora", epoch=best_epoch,
-   best_val_acc=best_val_acc, test_acc=test_acc,
-   parameters=count_parameters(model), training_time=train_time)
-
-# ── 6. 最终输出 ───────────────────────────────────────────────
-print("\n" + "=" * 50)
-print("Training Finished\n")
-print(f"Best Epoch: {best_epoch}")
-print(f"Best Val Acc: {best_val_acc:.4f}")
-print(f"Test Acc: {test_acc:.4f}")
-print(f"Parameters: {count_parameters(model)}")
-print(f"Training Time: {train_time:.2f}s\n")
-print(f"Checkpoint: {ckpt_path}")
-print("=" * 50)
+    test_micro, test_macro = evaluate(model, features, labels, data.test_nodes, test_adjacency, args.sigmoid, args.batch_size, device)
+    elapsed = time.time() - started
+    print(f"测试 micro-F1={test_micro:.4f} | macro-F1={test_macro:.4f} | 用时={elapsed:.1f}s")

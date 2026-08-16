@@ -1,340 +1,192 @@
-# Graph Machine Learning
+# 图机器学习论文复现
 
-复现三篇经典图神经网络论文的对比实验框架。
+使用 PyTorch 复现三篇经典图神经网络论文，并提供多随机种子实验、结果汇总与组会汇报图表。
 
-| 模型 | 论文 | 年份 |
-|------|------|------|
-| GCN | Semi-Supervised Classification with Graph Convolutional Networks (Kipf & Welling) | ICLR 2017 |
-| GraphSAGE | Inductive Representation Learning on Large Graphs (Hamilton et al.) | NeurIPS 2017 |
-| GAT | Graph Attention Networks (Veličković et al.) | ICLR 2018 |
+| 模型 | 论文 | 主任务 |
+| --- | --- | --- |
+| GCN | Semi-Supervised Classification with Graph Convolutional Networks | Cora / CiteSeer / PubMed 节点分类 |
+| GAT | Graph Attention Networks | Cora / CiteSeer / PubMed 节点分类 |
+| GraphSAGE | Inductive Representation Learning on Large Graphs | PPI 归纳式多标签分类 |
 
----
+## 实验协议
+
+- GCN 和 GAT 使用 Planetoid 的 Cora、CiteSeer、PubMed 固定划分，指标为 test accuracy。
+- GCN 使用两层结构、16 个隐藏维度、dropout 0.5、Adam `lr=0.01`、200 epochs。
+- GAT 使用 8 个隐藏注意力头、每头 8 维、dropout 0.6、Adam `lr=0.005`、最多 1000 epochs 与验证集早停。
+- GraphSAGE 的论文主实验使用 PPI JSON 数据与 Mean Aggregator、`25/10` 邻居采样、`128/128` 隐藏维度，指标为 micro-F1 和 macro-F1。
+- GraphSAGE 在 Cora、CiteSeer、PubMed 上的 accuracy 仅是统一框架下的 citation 消融实验，不能代替论文 PPI 主结果。
+- 批量实验只用验证集选择模型，最终测试集只在每次训练结束后评估一次。
 
 ## 环境
 
-```bash
-# Python 3.10+, PyTorch 2.x
-pip install torch numpy scipy pandas matplotlib networkx scikit-learn
-# 可选：UMAP 嵌入降维
-pip install umap-learn
+```powershell
+conda activate pyg
+pip install -r requirements.txt
 ```
+
+项目保留 `torch-geometric` 依赖和 PyG 数据缓存，便于后续继续开展 PyG 相关研究；本项目的三种论文复现模型本身不调用 PyG 卷积层。
 
 ## 项目结构
 
-```
+```text
 Graph-Machine-Learning/
-│
-├── models/                     # 模型定义
-│   ├── gcn.py                  #   GCN（两层图卷积）
-│   ├── graphsage.py            #   GraphSAGE（Mean 聚合器）
-│   └── gat.py                  #   GAT（8 头注意力 + 注意力权重提取）
-│
-├── layers/                     # 底层算子
-│   ├── graph_conv.py           #   图卷积层 GCN
-│   ├── graph_attention.py      #   图注意力层 GAT（单头 / 多头, 支持 return_attention）
-│   ├── graphsage_layer.py      #   GraphSAGE 层
-│   ├── sampler.py              #   邻居采样器
-│   └── aggregators/            #   聚合器
-│       ├── mean.py             #     Mean 聚合
-│       ├── pool.py             #     Pool 聚合
-│       └── lstm.py             #     LSTM 聚合
-│
-├── datasets/                   # 数据集加载
-│   ├── base.py                 #   统一 DataDict 容器 + 加载入口
-│   ├── cora.py / citeseer.py / pubmed.py
-│
-├── utils/                      # 工具函数
-│   ├── training.py             #   train_epoch / evaluate / predict
-│   ├── graph_utils.py          #   normalize_adj / add_self_loops
-│   ├── paths.py                #   目录常量
-│   ├── seed.py                 #   随机种子
-│   ├── checkpoint.py           #   模型保存 / 加载
-│   └── metrics.py              #   accuracy
-│
-├── experiments/                # 实验脚本
-│   ├── train/                  #   训练脚本
-│   │   ├── train_gcn.py        #     GCN → best_gcn.pt
-│   │   ├── train_graphsage.py  #     GraphSAGE → best_graphsage.pt
-│   │   └── train_gat.py        #     GAT → best_gat.pt
-│   ├── visualize/              #   可视化脚本（调用 runner）
-│   │   ├── visualize_gcn.py
-│   │   ├── visualize_graphsage.py
-│   │   └── visualize_gat.py
-│   ├── comparison/               #   模型对比
-│   │   ├── compare_train.py      #     从头训练对比（慢）
-│   │   ├── compare_checkpoint.py #     checkpoint 横向对比（快）
-│   │   ├── multi_seed.py         #     多 seed 统计（Mean ± Std）
-│   │   └── run_all_datasets.py   #     多数据集实验
-│   └── runner.py               #   通用实验运行器（训练 + 记录 + 画图）
-│
-├── vis_tool/                   # 可视化系统
-│   ├── config.py               #   样式 / 配色 / 工具
-│   ├── embedding/              #   嵌入降维
-│   │   ├── tsne.py             #     t-SNE
-│   │   └── umap.py             #     UMAP
-│   ├── graph/                  #   图拓扑
-│   │   └── topology.py
-│   ├── plots/                  #   训练曲线 / 评估曲线
-│   │   ├── train_curve.py      #     Loss / Accuracy
-│   │   ├── roc.py              #     ROC 曲线
-│   │   └── pr.py               #     Precision-Recall 曲线
-│   ├── analysis/               #   注意力 / 分类分析
-│   │   ├── attention.py        #     注意力权重可视化
-│   │   └── classification.py   #     混淆矩阵
-│   └── statistics/             #   结果表
-│       └── result_table.py
-│
-├── data/                       # 原始数据（Planetoid 格式 pickle 文件）
-└── outputs/                    # 实验产物
-    ├── checkpoints/            #   模型权重
-    ├── model_comparison.csv    #   模型横向对比表
-    ├── results/                #   benchmark.csv（集中记录）
-    ├── visualizations/         #   图表（按模型分子目录）
-    └── runs/                   #   训练历史 CSV
+├── data/                         # Cora、CiteSeer、PubMed、PPI 原始数据
+├── datasets/                     # Planetoid 与 GraphSAGE JSON 数据加载
+├── layers/                       # GCN、GAT、GraphSAGE 算子、聚合器与采样器
+├── models/                       # 三种模型定义
+├── experiments/
+│   ├── train/                    # 单次论文协议训练入口
+│   ├── comparison/               # 多种子实验与结果对比
+│   ├── visualize/                # 组会图表入口
+│   └── runner.py                 # 图表生成运行器
+├── vis_tool/                     # 嵌入、注意力、分类和训练曲线可视化
+├── notebooks/                    # PyG 数据集检查 Notebook
+├── outputs/
+│   ├── results/                  # 正式多种子结果 CSV
+│   ├── runs/                     # 单次训练历史与汇总
+│   └── visualizations/           # 组会图表
+└── logs/                         # 每次实验的终端输出与组会实验记录
 ```
 
----
+## 单次训练
 
-## 快速开始
+在项目根目录运行：
 
-```bash
-# 全部命令在项目根目录执行
-cd Graph-Machine-Learning
-
-# 设置 PYTHONPATH（Windows PowerShell / Git Bash）
-export PYTHONPATH="."       # Git Bash
-$env:PYTHONPATH="."         # PowerShell
+```powershell
+python experiments/train/train_gcn.py --dataset cora --seed 10
+python experiments/train/train_gat.py --dataset cora --seed 10 --epochs 1000
+python experiments/train/train_graphsage.py --train-prefix data/PPI/raw/ppi/ppi --sigmoid --seed 10
 ```
 
-### 1. 训练三个模型
+GCN、GAT 与 GraphSAGE citation 消融可选数据集为：`cora`、`citeseer`、`pubmed`。
 
-```bash
-python experiments/train/train_gcn.py
-python experiments/train/train_graphsage.py
-python experiments/train/train_gat.py
+## 五种子实验
+
+Citation 网络的三种模型与三个数据集。每个“模型 × 数据集 × 随机种子”训练完成后，会立即保存独立的训练曲线、t-SNE、混淆矩阵、ROC、PR 和分类别准确率图像：
+
+```powershell
+python experiments/comparison/run_all_datasets.py --seeds 10 20 30 40 50
 ```
 
-训练完成后 `outputs/checkpoints/` 下生成：
+若要忽略已有 CSV 记录并完整重跑：
 
-```
-best_gcn.pt        best_graphsage.pt        best_gat.pt
-```
-
-### 2. 可视化（单个模型）
-
-```bash
-python experiments/visualize/visualize_gcn.py
-python experiments/visualize/visualize_graphsage.py
-python experiments/visualize/visualize_gat.py
+```powershell
+python experiments/comparison/run_all_datasets.py --seeds 10 20 30 40 50 --force
 ```
 
-每个模型生成到 `outputs/visualizations/<model>/`：
+GraphSAGE PPI 主实验：
 
-| 图表 | 含义 | 说明 |
-|------|------|------|
-| `training_curves.png` | Loss / Accuracy 曲线 | 所有模型 |
-| `embeddings_tsne.png` | 隐藏层 t-SNE 嵌入 | 所有模型 |
-| `embeddings_umap.png` | 隐藏层 UMAP 嵌入 | 可选 |
-| `confusion_matrix.png` | 归一化混淆矩阵 | 所有模型 |
-| `roc_curves.png` | ROC 曲线（多类） | 所有模型 |
-| `pr_curves.png` | Precision-Recall 曲线 | 所有模型 |
-| `per_class_accuracy.png` | 每类准确率 | 所有模型 |
-| `graph_topology.png` | Cora 引文图拓扑 | 共享 |
-| `attention_summary.png` | 多节点注意力分布对比 | **GAT 专属** |
-| `attention_hub_node.png` | Hub 节点邻居注意力排名 | **GAT 专属** |
-| `attention_graph.png` | 注意力权重边着色 | **GAT 专属** |
+```powershell
+python experiments/comparison/multi_seed.py --train-prefix data/PPI/raw/ppi/ppi --seeds 10 20 30 40 50 123
+```
 
-### 3. 模型横向对比
+结果保存于：
 
-```bash
-# 加载 checkpoint 对比（快，不重新训练）
+- `outputs/results/citation_multi_seed_raw.csv`
+- `outputs/results/citation_multi_seed_summary.csv`
+- `outputs/results/graphsage_ppi_multi_seed_raw.csv`
+- `outputs/results/graphsage_ppi_multi_seed_summary.csv`
+- `outputs/visualizations/<model>_<dataset>/seed_<seed>/`
+- `outputs/visualizations/benchmark_summary/`：多模型多数据集汇总图与 GraphSAGE PPI F1 图
+
+查看 citation 多种子汇总：
+
+```powershell
 python experiments/comparison/compare_checkpoint.py
-
-# 从头训练并对比（慢，完整训练流程）
-python experiments/comparison/compare_train.py
-
-# 多 seed 重复实验（论文风格 Mean ± Std）
-python experiments/comparison/multi_seed.py
 ```
 
-**单次对比**（`compare_checkpoint.py` / `compare_train.py`）输出到 `outputs/model_comparison.csv`：
+## 组会图表
 
-```
-Model       Accuracy    Parameters   Inference
-GCN          78.60%       23.06K      0.003
-GraphSAGE    79.10%       46.10K      0.447
-GAT          80.30%       92.30K      0.127
-```
+以下命令会按当前复现参数训练一次 Cora，并生成训练曲线、t-SNE 节点嵌入、混淆矩阵、ROC、PR、分类别准确率和 citation 子图；GAT 额外生成注意力图。它们不保存模型 checkpoint，不影响正式多种子结果。
 
-**多 seed 统计**（`multi_seed.py`）输出到 `outputs/results/multi_seed_summary.csv`：
-
-| Model | Mean | Std |
-|-------|------|-----|
-| GAT | 80.76% | ±1.11% |
-| GCN | 80.30% | ±0.97% |
-| GraphSAGE | 76.00% | ±1.33% |
-
-> 单次为 seed=42 结果；多 seed 为 10/20/30/40/50 共 5 次平均。
-
-### 4. 多数据集实验
-
-```bash
-python experiments/comparison/run_all_datasets.py
+```powershell
+python experiments/visualize/visualize_gcn.py
+python experiments/visualize/visualize_gat.py
+python experiments/visualize/visualize_graphsage.py
 ```
 
-自动跑完 3 模型 × 3 数据集共 9 组实验，结果汇总到 `outputs/results/benchmark.csv`。
+输出目录：
 
----
+- `outputs/visualizations/<model>_<dataset>/seed_<seed>/`：正式多种子运行的逐次图像
+- `outputs/visualizations/benchmark_summary/`：跨模型/数据集和 PPI 的汇总图
 
-## 数据集
+对应训练过程和单次结果保存在 `outputs/runs/`，终端运行记录保存在 `logs/`。
 
-| 数据集 | 节点数 | 特征维 | 类别数 | 训练/验证/测试 |
-|--------|--------|--------|--------|----------------|
-| Cora | 2,708 | 1,433 | 7 | 140 / 500 / 1,000 |
-| CiteSeer | 3,327 | 3,703 | 6 | 120 / 500 / 1,000 |
-| PubMed | 19,717 | 500 | 3 | 60 / 500 / 1,000 |
+## 对外展示操作
 
-切换数据集：修改脚本中的 `dataset_name` 参数（`"cora"` / `"citeseer"` / `"pubmed"`）
+建议按下面的顺序完成一次 5--8 分钟的展示。展示时优先读取仓库已提交的多种子结果；现场只运行一个 GCN 示例来证明训练、评估和绘图流程可以端到端执行。不要在现场执行全量五种子实验，它会重新训练多个模型，耗时较长。
 
----
+### 1. 演示前准备
 
-## 模型超参数
+在项目根目录打开 PowerShell，并确认环境和结果文件均可用：
 
-### GCN
-
-```python
-GCN(input_dim=data.num_features, hidden_dim=16,
-    output_dim=data.num_classes, dropout=0.5)
-
-lr=0.01, weight_decay=5e-4
+```powershell
+conda activate pyg
+pip install -r requirements.txt
+python experiments/comparison/compare_checkpoint.py
 ```
 
-### GraphSAGE
+最后一条命令会打印 3 个模型在 Cora、CiteSeer、PubMed 上各 5 个随机种子的 `mean +/- std` test accuracy。说明比较结论使用多随机种子统计，而不是挑选单次最优结果。
 
-当前实现 NeurIPS 2017 GraphSAGE **Mean Aggregator**，其他 Aggregator（Pool / LSTM）作为扩展接口保留在 `layers/aggregators/`。
+### 2. 展示已有的基准结果
 
-```python
-GraphSAGE(input_dim=data.num_features, hidden_dim=16,
-          output_dim=data.num_classes, dropout=0.5)
+依次打开下面的目录和文件：
 
-lr=0.01, weight_decay=5e-4
+```powershell
+Invoke-Item outputs\visualizations\benchmark_summary
+Invoke-Item outputs\results\citation_multi_seed_summary.csv
+Invoke-Item outputs\results\graphsage_ppi_multi_seed_summary.csv
 ```
 
-### GAT
+推荐按以下顺序讲解图表：
 
-```python
-GAT(input_dim=data.num_features, hidden_dim=8,
-    output_dim=data.num_classes, n_heads=8, dropout=0.6)
+1. `accuracy_mean_std.png`：比较三种模型在三个 citation 数据集上的平均准确率和标准差。
+2. `seed_stability.png`：说明不同随机种子下的波动，配合 CSV 中的 `runs=5` 解释统计口径。
+3. `accuracy_vs_time.png`：说明精度与训练时间的关系，而不只比较最高精度。
+4. `ppi_f1_mean_std.png`：单独说明 GraphSAGE 的论文主实验使用 PPI 多标签分类，并以 micro-F1 / macro-F1 评价；它不能与 citation accuracy 放在同一张排名表中比较。
 
-lr=0.005, weight_decay=5e-4
+### 3. 现场复现一个端到端样例
+
+运行 GCN 的 Cora 单次展示脚本：
+
+```powershell
+python experiments/visualize/visualize_gcn.py
 ```
 
-> 以上参数均为论文原值。GCN 使用 normalized adjacency 矩阵，GraphSAGE / GAT 使用 edge_index。
-> Cora 典型结果（seed=42, CPU）：GCN 78.6%，GraphSAGE 79.1%，GAT 80.3%。不同 seed 波动约 ±2%。
+命令结束后会在终端打印测试准确率、最佳轮次和图表输出目录。随后打开生成结果：
 
----
-
-## 使用 runner 自定义实验
-
-```python
-from experiments.runner import run_experiment
-from models.gcn import GCN
-
-result = run_experiment(
-    model_class=GCN,
-    model_name="GCN",
-    dataset_name="cora",
-
-    # 模型参数
-    model_kwargs={"hidden_dim": 16, "dropout": 0.5},
-
-    # 训练参数
-    lr=0.01,
-    weight_decay=5e-4,
-    epochs=200,
-    patience=100,
-    seed=42,
-
-    # 可视化开关
-    skip_tsne=False,    # True = 跳过 t-SNE（省时间）
-    skip_graph=False,   # 图拓扑各模型相同，可跳过一次
-)
-
-print(f"Test Acc: {result['test_acc']:.4f}")
-print(f"Parameters: {result['parameters']}")
-print(f"Train Time: {result['train_time']:.2f}s")
+```powershell
+Invoke-Item outputs\runs\gcn_cora\summary.csv
+Invoke-Item outputs\visualizations\gcn_cora
 ```
 
-runner 自动完成：
-- 训练 + early stopping
-- 保存 checkpoint → `outputs/checkpoints/best_<model>.pt`
-- 保存训练历史 CSV → `outputs/runs/<model>/history.csv`
-- 生成全套可视化图表（含 GAT 专属注意力可视化）
-- 追加 benchmark → `outputs/results/benchmark.csv`
+按“`summary.csv` 中的最佳验证轮次与最终测试准确率 -> `training_curves.png` -> `embeddings_tsne.png` -> `confusion_matrix.png`”的顺序展示即可。这样可以清楚说明：模型选择只依据验证集，测试集只在训练结束后评估一次；图表则提供收敛过程、节点表示和分类错误的可检查证据。
 
----
+若需要展示注意力机制，可额外运行并打开 GAT 的注意力图：
 
-## GAT 注意力可视化
-
-GAT 最大创新是**学习邻居重要性权重**。runner 会为 GAT 自动生成三张注意力图：
-
-| 图表 | 内容 |
-|------|------|
-| `attention_summary.png` | 6 个高度节点的 Top-8 邻居注意力柱状图网格 |
-| `attention_hub_node.png` | 最高度节点对每个邻居的注意力权重排名 |
-| `attention_graph.png` | 图拓扑 + 边颜色/粗细按注意力权重编码 |
-
-也可以独立调用：
-
-```python
-from models.gat import GAT
-from vis_tool.analysis.attention import plot_attention_summary
-
-avg_attn, all_attn = model.get_attention_weights(features, edge_index)
-plot_attention_summary(avg_attn.numpy(), edge_index.numpy(),
-                       num_nodes=6, top_k=8,
-                       save_path="attention_summary.png")
+```powershell
+python experiments/visualize/visualize_gat.py
+Invoke-Item outputs\visualizations\gat_cora
 ```
 
----
+其中 `attention_summary.png`、`attention_hub_node.png` 和 `attention_graph.png` 分别展示多节点汇总、中心节点的邻居权重与局部注意力子图。GraphSAGE 的 PPI 正式实验应使用本 README 中的 `multi_seed.py` 命令；`visualize_graphsage.py` 仅用于 citation 网络上的统一框架消融展示。
 
-## 添加新模型
+### 4. 可能被问到的问题
 
-1. 在 `models/` 下创建模型文件，继承 `nn.Module`：
+- **为什么结果不是单个数字？** 每个 citation 组合使用 5 个随机种子，报告均值和标准差，以反映随机初始化与训练波动。
+- **为什么 GraphSAGE 的数值较低？** citation 上的 GraphSAGE 是消融实验；其论文主任务是 PPI 归纳式多标签分类，应查看独立的 F1 结果。
+- **如何完整重跑？** 使用上文“五种子实验”中的命令；如确实需要覆盖已有 CSV，再加 `--force`。完整重跑会修改 `outputs/` 下的结果和图表，展示现场通常不需要执行。
 
-```python
-class MyGNN(nn.Module):
-    graph_type = "edge_index"   # "adj" 或 "edge_index"
+## 当前实验结果
 
-    def forward(self, x, graph):
-        ...
-        return F.log_softmax(x, dim=1)
+本表由 2026-08-13 使用种子 `10 20 30 40 50` 完成 3 个模型 × 3 个 citation 数据集的 45 次正式运行生成。数值为 test accuracy 的均值 ± 标准差。
 
-    def get_embeddings(self, x, graph):
-        """返回隐藏层嵌入用于可视化（可选）"""
-        ...
-```
+| 模型 | Cora | CiteSeer | PubMed |
+| --- | --- | --- | --- |
+| GCN | 81.28% +/- 0.40% | 71.20% +/- 0.91% | 79.10% +/- 0.41% |
+| GAT | 83.24% +/- 0.58% | 72.26% +/- 0.68% | 77.46% +/- 0.78% |
+| GraphSAGE citation 消融 | 77.38% +/- 0.72% | 67.92% +/- 1.65% | 77.22% +/- 1.08% |
 
-2. 创建 `experiments/train/train_mygnn.py` / `experiments/visualize/visualize_mygnn.py`
+GraphSAGE PPI 主实验使用种子 `10 20 30 40 50 123`、10 个 epoch 和 batch size 512，共 6 次运行：micro-F1 为 `0.5854 +/- 0.0100`，macro-F1 为 `0.4337 +/- 0.0146`。其中官方 seed 123 的 micro-F1 为 `0.5995`，macro-F1 为 `0.4579`。
 
-3. 在 `experiments/comparison/` 中加入新模型对比
-
----
-
-## 预期结果（CPU, seed=42）
-
-| Dataset | GCN | GraphSAGE | GAT |
-|---------|-----|-----------|-----|
-| Cora | 79.30% | 78.30% | **80.30%** |
-| CiteSeer | 69.00% | 66.70% | **69.10%** |
-| PubMed | 78.20% | 74.70% | **77.80%** |
-
-### 多 seed 统计（Cora, 5 seeds）
-
-| 指标 | GCN | GraphSAGE | GAT |
-|------|-----|-----------|-----|
-| Test Accuracy | 80.30 ± 0.97% | 76.00 ± 1.33% | **80.76 ± 1.11%** |
-| Parameters | 23,063 | 46,103 | 92,302 |
-| Train Time | ~1.7s | ~131s | ~242s |
-
-> PyTorch 2.x, Intel i7。GAT 使用稀疏边注意力（O(E) 内存）支持大图。GPU 下训练更快。
+完整逐种子结果、耗时和实验协议见 `outputs/results/`；本轮运行记录见 `logs/2026-08-13.md`。

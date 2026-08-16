@@ -1,1 +1,1 @@
-"""Utility functions for graph machine learning."""
+"""图机器学习项目的通用工具函数。"""

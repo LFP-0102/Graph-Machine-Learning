@@ -1,26 +1,11 @@
-"""
-GCN 论文图表复现 + 自定义可视化。
+"""生成 GCN 在 Cora 上复现结果的组会图表。"""
+import sys
+from pathlib import Path
 
-用法：
-    PYTHONPATH=. python experiments/visualize/visualize_gcn.py
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-输出：
-    outputs/visualizations/gcn/   （所有图表）
-    outputs/runs/gcn/             （训练历史 + 结果表）
-"""
 from experiments.runner import run_experiment
 from models.gcn import GCN
 
 if __name__ == "__main__":
-    run_experiment(
-        model_class=GCN,
-        model_name="GCN",
-        dataset_name="cora",
-        model_kwargs={"hidden_dim": 16, "dropout": 0.5},
-        use_normalized_adj=True,     # GCN 用归一化邻接矩阵
-        lr=0.01,
-        weight_decay=5e-4,
-        epochs=200,
-        patience=100,
-        seed=100,
-    )
+    run_experiment(GCN, "GCN", "cora", model_kwargs={"hidden_dim": 16, "dropout": 0.5}, lr=0.01, epochs=200, patience=100, seed=100)
